@@ -10,8 +10,6 @@ engine = create_async_engine(
     echo=settings.APP_ENV == "development",
     connect_args={
         "ssl": "require",
-        "statement_cache_size": 0,
-        "prepared_statement_cache_size": 0,
     },
 )
 
