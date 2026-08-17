@@ -16,7 +16,7 @@ import models.course
 
 import models.subscription
 import models.schedule
-
+import models.notification
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
@@ -48,6 +48,8 @@ from routers import auth, students, schedule
 app.include_router(auth.router)
 app.include_router(students.router)
 app.include_router(schedule.router)
+from routers import auth, students, schedule, notifications
+app.include_router(notifications.router)
 
 @app.get("/health")
 async def health():
