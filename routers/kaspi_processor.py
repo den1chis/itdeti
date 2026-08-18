@@ -83,14 +83,28 @@ def _parse_amount(text: str) -> float | None:
 
 
 def _parse_sender_name(text: str) -> str | None:
-    patterns = [
-        r'от\s+([А-ЯЁа-яёA-Za-z]+(?:\s+[А-ЯЁа-яёA-Za-z]+){0,2})',
-        r'Отправитель[:\s]+([А-ЯЁа-яёA-Za-z]+(?:\s+[А-ЯЁа-яёA-Za-z]+){0,2})',
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            return match.group(1).strip()
+    """
+    Kaspi пишет имя отправителя прямо в тексте:
+    "Пополнение 15 000 тг. Денис Ш. Доступно: 32 500 тг."
+    "Перевод 5000 тг от Айгуль И. Баланс: ..."
+    """
+    # Вариант 1: "от Имя Ф." 
+    match = re.search(r'от\s+([А-ЯЁа-яёA-Za-z]+(?:\s+[А-ЯЁа-яёA-Za-z]+\.?){0,2})', text)
+    if match:
+        return match.group(1).strip()
+
+    # Вариант 2: после суммы и точки идёт "Имя Ф." до "Доступно/Баланс"
+    # "Пополнение 15 000 тг. Денис Ш. Доступно:"
+    match = re.search(
+        r'тг\.?\s+([А-ЯЁа-яёA-Za-z]+(?:\s+[А-ЯЁа-яёA-Za-z]{1,2}\.?)?)\s*\.',
+        text
+    )
+    if match:
+        name = match.group(1).strip()
+        # Фильтруем мусор — "Доступно", "Баланс" и т.д.
+        if name.lower() not in ('доступно', 'баланс', 'остаток', 'итого'):
+            return name
+
     return None
 
 
@@ -98,7 +112,8 @@ async def _find_parent_by_name(name: str, db: AsyncSession) -> Parent | None:
     result = await db.execute(select(Parent))
     parents = result.scalars().all()
 
-    name_parts = [p.lower() for p in name.split() if len(p) > 2]
+    # Разбиваем на части, убираем точки
+    name_parts = [p.strip('.').lower() for p in name.split() if len(p.strip('.')) > 1]
     if not name_parts:
         return None
 
@@ -106,14 +121,19 @@ async def _find_parent_by_name(name: str, db: AsyncSession) -> Parent | None:
     best_score = 0
 
     for parent in parents:
-        full_lower = parent.full_name.lower()
-        score = sum(1 for part in name_parts if part in full_lower)
+        full_parts = parent.full_name.lower().split()
+        score = 0
+        for np in name_parts:
+            for fp in full_parts:
+                # Точное совпадение или совпадение начала (Ш. → Шевченко)
+                if fp == np or fp.startswith(np) or np.startswith(fp[:len(np)]):
+                    score += 1
+                    break
         if score > best_score:
             best_score = score
             best = parent
 
     return best if best_score >= 1 else None
-
 
 async def _find_pending_subscription(parent_id, amount: float, db: AsyncSession) -> Subscription | None:
     # Получаем всех учеников этого родителя
