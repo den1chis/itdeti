@@ -1,4 +1,5 @@
 import re
+import logging
 from datetime import datetime, timezone
 from typing import Optional, List
 from fastapi import APIRouter, Depends
@@ -12,12 +13,13 @@ from models.user import User
 import uuid
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
+logger = logging.getLogger(__name__)
 
 
 # ── Schemas ──────────────────────────────────────────────────
 
 class NotificationIn(BaseModel):
-    source: str                        # kaspi | whatsapp | sms | internal
+    source: str
     raw_text: str
     sender_name: Optional[str] = None
     sender_phone: Optional[str] = None
@@ -54,13 +56,9 @@ class NotificationListItem(BaseModel):
 # ── Kaspi parser ─────────────────────────────────────────────
 
 KASPI_PATTERNS = [
-    # "Пополнение 15 000 тг. Баланс: 32 500 тг."
     (r"[Пп]ополнение\s+([\d\s]+)\s*тг", "payment_received", "Пополнение"),
-    # "Перевод 5000 тг от Иван"
     (r"[Пп]еревод\s+([\d\s]+)\s*тг", "payment_received", "Перевод"),
-    # "Оплата 3 000 тг"
     (r"[Оо]плата\s+([\d\s]+)\s*тг", "payment_received", "Оплата"),
-    # "Зачисление 10000 тг"
     (r"[Зз]ачисление\s+([\d\s]+)\s*тг", "payment_received", "Зачисление"),
 ]
 
@@ -85,7 +83,7 @@ def parse_kaspi(text: str) -> dict:
                 amount = int(amount_str)
             except ValueError:
                 amount = None
-            summary = f"{label} {amount:,} тг".replace(",", " ") if amount else f"{label}"
+            summary = f"{label} {amount:,} тг".replace(",", " ") if amount else label
             return {
                 "detected_action": action,
                 "ai_summary": summary,
@@ -102,8 +100,6 @@ def parse_kaspi(text: str) -> dict:
 
 def parse_whatsapp(text: str, sender: Optional[str]) -> dict:
     text_lower = text.lower()
-
-    # Перенос занятия
     for kw in RESCHEDULE_KEYWORDS:
         if kw in text_lower:
             who = sender or "Родитель"
@@ -113,8 +109,6 @@ def parse_whatsapp(text: str, sender: Optional[str]) -> dict:
                 "ai_confidence": 0.75,
                 "requires_confirmation": True,
             }
-
-    # Подтверждение
     for kw in CONFIRMATION_KEYWORDS:
         if kw in text_lower:
             who = sender or "Родитель"
@@ -124,8 +118,6 @@ def parse_whatsapp(text: str, sender: Optional[str]) -> dict:
                 "ai_confidence": 0.7,
                 "requires_confirmation": False,
             }
-
-    # Обычное сообщение
     who = sender or "Неизвестный"
     return {
         "detected_action": "message",
@@ -140,13 +132,12 @@ def parse_notification(source: str, text: str, sender: Optional[str]) -> dict:
         return parse_kaspi(text)
     elif source in ("whatsapp", "sms"):
         return parse_whatsapp(text, sender)
-    else:
-        return {
-            "detected_action": "unknown",
-            "ai_summary": f"Уведомление из {source} — требует внимания",
-            "ai_confidence": 0.3,
-            "requires_confirmation": True,
-        }
+    return {
+        "detected_action": "unknown",
+        "ai_summary": f"Уведомление из {source} — требует внимания",
+        "ai_confidence": 0.3,
+        "requires_confirmation": True,
+    }
 
 
 # ── Endpoints ─────────────────────────────────────────────────
@@ -174,6 +165,21 @@ async def receive_notification(
     db.add(notif)
     await db.commit()
     await db.refresh(notif)
+
+    # ── Автоматическая обработка Kaspi-оплаты ──
+    if notif.detected_action == "payment_received":
+        try:
+            from routers.kaspi_processor import process_kaspi_payment
+            sub, error = await process_kaspi_payment(notif, db)
+            if error:
+                logger.warning(f"Kaspi processor: {error}")
+            else:
+                logger.info(f"Kaspi processor: абонемент {sub.id} обновлён")
+        except Exception as e:
+            logger.error(f"Kaspi processor exception: {e}", exc_info=True)
+            # Не падаем — уведомление уже сохранено
+
+    await db.refresh(notif)
     return notif
 
 
@@ -196,14 +202,11 @@ async def confirm_notification(
     db: AsyncSession = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
-    result = await db.execute(
-        select(Notification).where(Notification.id == notification_id)
-    )
+    from fastapi import HTTPException
+    result = await db.execute(select(Notification).where(Notification.id == notification_id))
     notif = result.scalar_one_or_none()
     if not notif:
-        from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="Notification not found")
-
     notif.is_processed = True
     notif.confirmed_at = datetime.now(timezone.utc)
     notif.processed_at = datetime.now(timezone.utc)
