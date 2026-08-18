@@ -212,3 +212,36 @@ async def confirm_notification(
     notif.processed_at = datetime.now(timezone.utc)
     await db.commit()
     return {"detail": "Confirmed", "id": str(notification_id)}
+
+@router.get("/debug/kaspi-test")
+async def debug_kaspi(
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Временный эндпоинт для диагностики касп-процессора"""
+    from routers.kaspi_processor import _parse_amount, _parse_sender_name, _find_parent_by_name, _find_pending_subscription
+
+    raw = "Пополнение 15 000 тг. Денис Ш. Доступно: 32 500 тг."
+
+    amount = _parse_amount(raw)
+    sender = _parse_sender_name(raw)
+
+    parent = await _find_parent_by_name(sender, db) if sender else None
+
+    sub = None
+    if parent:
+        sub = await _find_pending_subscription(parent.id, amount, db)
+
+    # Все родители в БД
+    from models.parent import Parent
+    all_parents_res = await db.execute(select(Parent))
+    all_parents = [{"id": str(p.id), "full_name": p.full_name} for p in all_parents_res.scalars().all()]
+
+    return {
+        "raw": raw,
+        "parsed_amount": amount,
+        "parsed_sender": sender,
+        "parent_found": {"id": str(parent.id), "full_name": parent.full_name} if parent else None,
+        "subscription_found": str(sub.id) if sub else None,
+        "all_parents_in_db": all_parents,
+    }
