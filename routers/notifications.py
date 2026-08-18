@@ -2,13 +2,14 @@ import re
 import logging
 from datetime import datetime, timezone
 from typing import Optional, List
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
 from core.database import get_db
 from core.dependencies import get_current_user
 from models.notification import Notification
+from models.parent import Parent
 from models.user import User
 import uuid
 
@@ -142,6 +143,44 @@ def parse_notification(source: str, text: str, sender: Optional[str]) -> dict:
 
 # ── Endpoints ─────────────────────────────────────────────────
 
+# ВАЖНО: /debug/* и другие статичные пути ВСЕГДА выше /{notification_id}
+
+@router.get("/debug/kaspi-test")
+async def debug_kaspi(
+    raw: str = "Пополнение 20 000 тг. Александр Ш. Доступно: 32 500 тг.",
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """
+    Диагностика касп-процессора.
+    Можно передать свой текст: /notifications/debug/kaspi-test?raw=Пополнение+15000+тг.+Иван+И.
+    """
+    from routers.kaspi_processor import (
+        _parse_amount, _parse_sender_name,
+        _find_parent_by_name, _find_pending_subscription
+    )
+
+    amount = _parse_amount(raw)
+    sender = _parse_sender_name(raw)
+    parent, score = await _find_parent_by_name(sender, db) if sender else (None, 0)
+    sub = await _find_pending_subscription(parent.id, amount, db) if parent else None
+
+    all_parents_res = await db.execute(select(Parent))
+    all_parents = [
+        {"id": str(p.id), "full_name": p.full_name}
+        for p in all_parents_res.scalars().all()
+    ]
+
+    return {
+        "raw": raw,
+        "step1_amount": amount,
+        "step2_sender": sender,
+        "step3_parent": {"id": str(parent.id), "full_name": parent.full_name, "score": score} if parent else None,
+        "step4_subscription": str(sub.id) if sub else None,
+        "all_parents_in_db": all_parents,
+    }
+
+
 @router.post("", response_model=NotificationResponse, status_code=201)
 async def receive_notification(
     payload: NotificationIn,
@@ -166,7 +205,7 @@ async def receive_notification(
     await db.commit()
     await db.refresh(notif)
 
-    # ── Автоматическая обработка Kaspi-оплаты ──
+    # Автообработка Kaspi
     if notif.detected_action == "payment_received":
         try:
             from routers.kaspi_processor import process_kaspi_payment
@@ -174,10 +213,9 @@ async def receive_notification(
             if error:
                 logger.warning(f"Kaspi processor: {error}")
             else:
-                logger.info(f"Kaspi processor: абонемент {sub.id} обновлён")
+                logger.info(f"Kaspi processor OK: абонемент {sub.id} → paid")
         except Exception as e:
             logger.error(f"Kaspi processor exception: {e}", exc_info=True)
-            # Не падаем — уведомление уже сохранено
 
     await db.refresh(notif)
     return notif
@@ -202,8 +240,9 @@ async def confirm_notification(
     db: AsyncSession = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
-    from fastapi import HTTPException
-    result = await db.execute(select(Notification).where(Notification.id == notification_id))
+    result = await db.execute(
+        select(Notification).where(Notification.id == notification_id)
+    )
     notif = result.scalar_one_or_none()
     if not notif:
         raise HTTPException(status_code=404, detail="Notification not found")
@@ -212,36 +251,3 @@ async def confirm_notification(
     notif.processed_at = datetime.now(timezone.utc)
     await db.commit()
     return {"detail": "Confirmed", "id": str(notification_id)}
-
-@router.get("/debug/kaspi-test")
-async def debug_kaspi(
-    db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
-):
-    """Временный эндпоинт для диагностики касп-процессора"""
-    from routers.kaspi_processor import _parse_amount, _parse_sender_name, _find_parent_by_name, _find_pending_subscription
-
-    raw = "Пополнение 15 000 тг. Денис Ш. Доступно: 32 500 тг."
-
-    amount = _parse_amount(raw)
-    sender = _parse_sender_name(raw)
-
-    parent = await _find_parent_by_name(sender, db) if sender else None
-
-    sub = None
-    if parent:
-        sub = await _find_pending_subscription(parent.id, amount, db)
-
-    # Все родители в БД
-    from models.parent import Parent
-    all_parents_res = await db.execute(select(Parent))
-    all_parents = [{"id": str(p.id), "full_name": p.full_name} for p in all_parents_res.scalars().all()]
-
-    return {
-        "raw": raw,
-        "parsed_amount": amount,
-        "parsed_sender": sender,
-        "parent_found": {"id": str(parent.id), "full_name": parent.full_name} if parent else None,
-        "subscription_found": str(sub.id) if sub else None,
-        "all_parents_in_db": all_parents,
-    }
