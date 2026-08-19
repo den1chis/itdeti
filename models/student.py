@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Boolean, Date, DateTime, ForeignKey, Text, Numeric
+from sqlalchemy import Boolean, Column, Date, DateTime, ForeignKey, Numeric, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 import uuid
@@ -13,7 +13,7 @@ class Student(Base):
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     full_name = Column(String, nullable=False)
     birth_date = Column(Date, nullable=True)
-    level = Column(String, default="beginner", nullable=True)
+    level = Column(String, nullable=True, default="beginner")
     notes = Column(Text, nullable=True)
     balance = Column(Numeric(10, 2), nullable=False, default=0)
     lesson_price = Column(Numeric(10, 2), nullable=False)
