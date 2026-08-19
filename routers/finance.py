@@ -1,0 +1,279 @@
+from calendar import monthrange
+from datetime import date, datetime, timedelta, time
+from decimal import Decimal
+from typing import List, Optional
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from fastapi import APIRouter, Depends, HTTPException
+
+from core.database import get_db
+from core.dependencies import get_current_user, teacher_or_admin
+from models.expense import Expense
+from models.notification import Notification
+from models.payment import Payment
+from models.schedule import StudentScheduleSlot
+from models.student import Student
+from models.user import User
+from schemas.finance import (
+    ExpenseCreate,
+    ExpenseResponse,
+    FinanceSummary,
+    PaymentCreate,
+    PaymentResponse,
+    TransactionItem,
+)
+
+router = APIRouter(prefix="/finance", tags=["finance"])
+
+
+def _occurrences(slot: StudentScheduleSlot, start: date, end: date) -> int:
+    if end < start or not slot.is_active:
+        return 0
+    start = max(start, slot.valid_from)
+    if slot.valid_until:
+        end = min(end, slot.valid_until)
+    if end < start:
+        return 0
+    first = start + timedelta(days=(slot.day_of_week - start.weekday()) % 7)
+    if first > end:
+        return 0
+    return ((end - first).days // 7) + 1
+
+
+async def _schedule_counts(db: AsyncSession, start: date, end: date) -> tuple[int, Decimal]:
+    result = await db.execute(
+        select(StudentScheduleSlot, Student.lesson_price)
+        .join(Student, Student.id == StudentScheduleSlot.student_id)
+        .where(
+            Student.is_active.is_(True),
+            StudentScheduleSlot.is_active.is_(True),
+            StudentScheduleSlot.valid_from <= end,
+            (StudentScheduleSlot.valid_until.is_(None) | (StudentScheduleSlot.valid_until >= start)),
+        )
+    )
+    count = 0
+    income = Decimal("0.00")
+    for slot, price in result.all():
+        n = _occurrences(slot, start, end)
+        count += n
+        income += Decimal(price) * n
+    return count, income
+
+
+async def _sum_payments(db: AsyncSession, start: datetime, end: datetime) -> Decimal:
+    value = await db.scalar(
+        select(func.coalesce(func.sum(Payment.amount), 0)).where(
+            Payment.recorded_at >= start,
+            Payment.recorded_at < end,
+        )
+    )
+    return Decimal(value or 0)
+
+
+async def _sum_expenses(db: AsyncSession, start: date, end: date) -> Decimal:
+    value = await db.scalar(
+        select(func.coalesce(func.sum(Expense.amount), 0)).where(
+            Expense.expense_date >= start,
+            Expense.expense_date <= end,
+        )
+    )
+    return Decimal(value or 0)
+
+
+@router.post("/payments", response_model=PaymentResponse, status_code=201)
+async def create_payment(
+    payload: PaymentCreate,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(teacher_or_admin),
+):
+    student = await db.scalar(select(Student).where(Student.id == payload.student_id).with_for_update())
+    if not student:
+        raise HTTPException(404, "Student not found")
+
+    if payload.kaspi_notification_id:
+        notification = await db.scalar(
+            select(Notification).where(Notification.id == payload.kaspi_notification_id)
+        )
+        if not notification:
+            raise HTTPException(404, "Kaspi notification not found")
+        duplicate = await db.scalar(
+            select(Payment.id).where(Payment.kaspi_notification_id == payload.kaspi_notification_id)
+        )
+        if duplicate:
+            raise HTTPException(409, "This notification is already attached to a payment")
+
+    payment = Payment(
+        student_id=payload.student_id,
+        parent_id=payload.parent_id,
+        amount=payload.amount,
+        payment_method=payload.payment_method,
+        kaspi_notification_id=payload.kaspi_notification_id,
+        comment=payload.comment,
+        recorded_at=payload.recorded_at or datetime.now().astimezone(),
+    )
+    db.add(payment)
+    student.balance = Decimal(student.balance) + Decimal(payload.amount)
+    if payload.kaspi_notification_id:
+        notification = await db.scalar(select(Notification).where(Notification.id == payload.kaspi_notification_id))
+        if notification:
+            notification.is_processed = True
+            notification.action_taken = "payment_recorded"
+            notification.processed_at = datetime.now().astimezone()
+    await db.commit()
+    await db.refresh(payment)
+    return payment
+
+
+@router.get("/payments", response_model=List[PaymentResponse])
+async def list_payments(
+    student_id: Optional[str] = None,
+    from_date: Optional[date] = None,
+    to_date: Optional[date] = None,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    query = select(Payment).order_by(Payment.recorded_at.desc())
+    if student_id:
+        query = query.where(Payment.student_id == student_id)
+    if from_date:
+        query = query.where(Payment.recorded_at >= datetime.combine(from_date, time.min).astimezone())
+    if to_date:
+        query = query.where(Payment.recorded_at < datetime.combine(to_date + timedelta(days=1), time.min).astimezone())
+    result = await db.execute(query)
+    return result.scalars().all()
+
+
+@router.post("/expenses", response_model=ExpenseResponse, status_code=201)
+async def create_expense(
+    payload: ExpenseCreate,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(teacher_or_admin),
+):
+    expense = Expense(**payload.model_dump())
+    db.add(expense)
+    await db.commit()
+    await db.refresh(expense)
+    return expense
+
+
+@router.get("/expenses", response_model=List[ExpenseResponse])
+async def list_expenses(
+    category: Optional[str] = None,
+    month: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    query = select(Expense).order_by(Expense.expense_date.desc(), Expense.created_at.desc())
+    if category:
+        query = query.where(Expense.category == category)
+    if month:
+        try:
+            year, month_num = map(int, month.split("-"))
+            start = date(year, month_num, 1)
+            end = date(year, month_num, monthrange(year, month_num)[1])
+        except (ValueError, TypeError):
+            raise HTTPException(400, "month must be YYYY-MM")
+        query = query.where(Expense.expense_date >= start, Expense.expense_date <= end)
+    result = await db.execute(query)
+    return result.scalars().all()
+
+
+@router.get("/summary", response_model=FinanceSummary)
+async def finance_summary(
+    year: Optional[int] = None,
+    month: Optional[int] = None,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    today = date.today()
+    year = year or today.year
+    month = month or today.month
+    if month < 1 or month > 12:
+        raise HTTPException(400, "month must be 1..12")
+
+    month_start = date(year, month, 1)
+    month_end = date(year, month, monthrange(year, month)[1])
+    next_month = month_end + timedelta(days=1)
+    income = await _sum_payments(
+        db,
+        datetime.combine(month_start, time.min).astimezone(),
+        datetime.combine(next_month, time.min).astimezone(),
+    )
+    expense_total = await _sum_expenses(db, month_start, month_end)
+
+    categories_result = await db.execute(
+        select(Expense.category, func.coalesce(func.sum(Expense.amount), 0))
+        .where(Expense.expense_date >= month_start, Expense.expense_date <= month_end)
+        .group_by(Expense.category)
+    )
+    by_category = {category: Decimal(amount or 0) for category, amount in categories_result.all()}
+
+    all_income = await db.scalar(select(func.coalesce(func.sum(Payment.amount), 0)))
+    all_expenses = await db.scalar(select(func.coalesce(func.sum(Expense.amount), 0)))
+    total_balance = Decimal(all_income or 0) - Decimal(all_expenses or 0)
+
+    scheduled_count, scheduled_income = await _schedule_counts(db, month_start, month_end)
+    forecast_start = max(today, month_start)
+    forecast_count, forecast_income = await _schedule_counts(db, forecast_start, month_end)
+
+    return FinanceSummary(
+        month_start=month_start,
+        month_end=month_end,
+        income_from_students=income,
+        expenses_total=expense_total,
+        expenses_by_category=by_category,
+        net_profit=income - expense_total,
+        total_school_balance=total_balance,
+        scheduled_lessons_this_month=scheduled_count,
+        scheduled_income_this_month=scheduled_income,
+        forecast_income_remaining=forecast_income,
+    )
+
+
+@router.get("/transactions", response_model=List[TransactionItem])
+async def transactions(
+    limit: int = 100,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    limit = max(1, min(limit, 500))
+    payments = await db.execute(
+        select(Payment, Student.full_name)
+        .join(Student, Student.id == Payment.student_id)
+        .order_by(Payment.recorded_at.desc())
+        .limit(limit)
+    )
+    expenses = await db.execute(
+        select(Expense)
+        .order_by(Expense.created_at.desc())
+        .limit(limit)
+    )
+    items: list[TransactionItem] = []
+    for payment, student_name in payments.all():
+        items.append(
+            TransactionItem(
+                id=payment.id,
+                operation_type="income",
+                amount=payment.amount,
+                date=payment.recorded_at,
+                student_id=payment.student_id,
+                student_name=student_name,
+                payment_method=payment.payment_method,
+                description=payment.comment,
+            )
+        )
+    for expense in expenses.scalars().all():
+        items.append(
+            TransactionItem(
+                id=expense.id,
+                operation_type="expense",
+                amount=expense.amount,
+                date=datetime.combine(expense.expense_date, time.min).astimezone(),
+                category=expense.category,
+                payment_method=expense.payment_method,
+                description=expense.description,
+            )
+        )
+    return sorted(items, key=lambda item: item.date, reverse=True)[:limit]
+
