@@ -25,11 +25,7 @@ def _occurrence_datetime(day: date, slot: StudentScheduleSlot) -> datetime:
     return datetime.combine(day, slot.start_time).replace(tzinfo=LOCAL_TZ)
 
 
-async def _ensure_schedule_lessons(
-    db: AsyncSession,
-    start: date,
-    end: date,
-) -> None:
+async def _ensure_schedule_lessons(db: AsyncSession, start: date, end: date) -> None:
     if end < start:
         return
 
@@ -55,7 +51,6 @@ async def _ensure_schedule_lessons(
 
         while current <= last:
             start_at = _occurrence_datetime(current, slot)
-
             existing = await db.scalar(
                 select(Lesson).where(
                     Lesson.schedule_slot_id == slot.id,
@@ -65,39 +60,31 @@ async def _ensure_schedule_lessons(
 
             if not existing:
                 end_at = start_at + timedelta(minutes=slot.duration_minutes)
-                event = Event(
-                    title=f"Занятие — {student.full_name}",
-                    event_type="personal",
-                    start_time=start_at,
-                    end_time=end_at,
-                )
-                lesson = Lesson(
-                    student_id=student.id,
-                    lesson_type="regular",
-                    status="scheduled",
-                    price=student.lesson_price,
-                    schedule_slot_id=slot.id,
-                    original_start_time=start_at,
-                )
-                db.add(event)
-                await db.flush()
-                lesson.event_id = event.id
-                db.add(lesson)
-
                 try:
-                    await db.flush()
-                except IntegrityError:
-                    await db.rollback()
-                    existing = await db.scalar(
-                        select(Lesson).where(
-                            Lesson.schedule_slot_id == slot.id,
-                            Lesson.original_start_time == start_at,
+                    async with db.begin_nested():
+                        event = Event(
+                            title=f"Занятие — {student.full_name}",
+                            event_type="personal",
+                            start_time=start_at,
+                            end_time=end_at,
                         )
-                    )
-                    if existing:
-                        db.add(slot)
-                    else:
-                        raise
+                        db.add(event)
+                        await db.flush()
+
+                        lesson = Lesson(
+                            student_id=student.id,
+                            event_id=event.id,
+                            lesson_type="regular",
+                            status="scheduled",
+                            price=student.lesson_price,
+                            schedule_slot_id=slot.id,
+                            original_start_time=start_at,
+                        )
+                        db.add(lesson)
+                        await db.flush()
+                except IntegrityError:
+                    # Another concurrent request created the same occurrence.
+                    pass
 
             current += timedelta(days=7)
 
@@ -134,9 +121,7 @@ async def create_lesson(
     _: User = Depends(teacher_or_admin),
 ):
     student = await db.scalar(
-        select(Student)
-        .where(Student.id == payload.student_id)
-        .with_for_update()
+        select(Student).where(Student.id == payload.student_id).with_for_update()
     )
     if not student:
         raise HTTPException(404, "Student not found")
@@ -151,13 +136,24 @@ async def create_lesson(
         if not slot:
             raise HTTPException(404, "Schedule slot not found")
 
-    if payload.lesson_type == "trial":
-        price = Decimal("0.00")
-    else:
-        price = payload.price if payload.price is not None else Decimal(student.lesson_price)
+    price = (
+        Decimal("0.00")
+        if payload.lesson_type == "trial"
+        else payload.price if payload.price is not None else Decimal(student.lesson_price)
+    )
 
     if payload.schedule_slot_id and payload.start_time.tzinfo is None:
         payload.start_time = payload.start_time.replace(tzinfo=LOCAL_TZ)
+
+    if payload.schedule_slot_id:
+        duplicate = await db.scalar(
+            select(Lesson).where(
+                Lesson.schedule_slot_id == payload.schedule_slot_id,
+                Lesson.original_start_time == payload.start_time,
+            )
+        )
+        if duplicate:
+            return await _lesson_response(db, duplicate)
 
     end_at = payload.start_time + timedelta(minutes=payload.duration_minutes)
     event = Event(
@@ -219,19 +215,12 @@ async def list_lessons(
         await db.commit()
 
     query = select(Lesson).join(Event, Event.id == Lesson.event_id)
-
     if student_id:
         query = query.where(Lesson.student_id == student_id)
-
     if from_date:
         query = query.where(
-            Event.start_time >= datetime.combine(
-                from_date,
-                time.min,
-                tzinfo=LOCAL_TZ,
-            )
+            Event.start_time >= datetime.combine(from_date, time.min, tzinfo=LOCAL_TZ)
         )
-
     if to_date:
         query = query.where(
             Event.start_time < datetime.combine(
@@ -240,18 +229,11 @@ async def list_lessons(
                 tzinfo=LOCAL_TZ,
             )
         )
-
     if status:
         query = query.where(Lesson.status == status)
 
-    result = await db.execute(
-        query.order_by(Event.start_time.desc())
-    )
-
-    return [
-        await _lesson_response(db, lesson)
-        for lesson in result.scalars().all()
-    ]
+    result = await db.execute(query.order_by(Event.start_time.desc()))
+    return [await _lesson_response(db, lesson) for lesson in result.scalars().all()]
 
 
 @router.patch("/lessons/{lesson_id}", response_model=LessonResponse)
@@ -262,24 +244,17 @@ async def update_lesson(
     _: User = Depends(teacher_or_admin),
 ):
     lesson = await db.scalar(
-        select(Lesson)
-        .where(Lesson.id == lesson_id)
-        .with_for_update()
+        select(Lesson).where(Lesson.id == lesson_id).with_for_update()
     )
     if not lesson:
         raise HTTPException(404, "Lesson not found")
 
     event = await db.scalar(
-        select(Event)
-        .where(Event.id == lesson.event_id)
-        .with_for_update()
+        select(Event).where(Event.id == lesson.event_id).with_for_update()
     )
     student = await db.scalar(
-        select(Student)
-        .where(Student.id == lesson.student_id)
-        .with_for_update()
+        select(Student).where(Student.id == lesson.student_id).with_for_update()
     )
-
     if not event or not student:
         raise HTTPException(500, "Lesson data is incomplete")
 
@@ -287,11 +262,9 @@ async def update_lesson(
         if lesson.original_start_time is None and lesson.schedule_slot_id:
             lesson.original_start_time = event.start_time
 
-        duration = (
-            payload.duration_minutes
-            or int((event.end_time - event.start_time).total_seconds() // 60)
+        duration = payload.duration_minutes or int(
+            (event.end_time - event.start_time).total_seconds() // 60
         )
-
         event.start_time = (
             payload.start_time
             if payload.start_time.tzinfo
@@ -307,58 +280,36 @@ async def update_lesson(
             minutes=payload.duration_minutes
         )
 
-    for field in (
-        "topic",
-        "is_attended",
-        "teacher_notes",
-        "status",
-    ):
+    for field in ("topic", "is_attended", "teacher_notes", "status"):
         value = getattr(payload, field)
         if value is not None:
             setattr(lesson, field, value)
 
-    should_deduct = (
-        lesson.status == "completed"
-        and lesson.lesson_type != "trial"
-    )
-
+    should_deduct = lesson.status == "completed" and lesson.lesson_type != "trial"
     if should_deduct and not lesson.balance_deducted:
         student.balance = Decimal(student.balance) - Decimal(lesson.price)
         lesson.balance_deducted = True
-
     elif not should_deduct and lesson.balance_deducted:
         student.balance = Decimal(student.balance) + Decimal(lesson.price)
         lesson.balance_deducted = False
 
     await db.commit()
     await db.refresh(lesson)
-
     return await _lesson_response(db, lesson)
 
 
-async def _schedule_items(
-    db: AsyncSession,
-    start: date,
-    end: date,
-) -> list[ScheduleItem]:
+async def _schedule_items(db: AsyncSession, start: date, end: date) -> list[ScheduleItem]:
     await _ensure_schedule_lessons(db, start, end)
     await db.commit()
 
     lower = datetime.combine(start, time.min, tzinfo=LOCAL_TZ)
-    upper = datetime.combine(
-        end + timedelta(days=1),
-        time.min,
-        tzinfo=LOCAL_TZ,
-    )
+    upper = datetime.combine(end + timedelta(days=1), time.min, tzinfo=LOCAL_TZ)
 
     lesson_rows = await db.execute(
         select(Lesson, Event, Student)
         .join(Event, Event.id == Lesson.event_id)
         .join(Student, Student.id == Lesson.student_id)
-        .where(
-            Event.start_time >= lower,
-            Event.start_time < upper,
-        )
+        .where(Event.start_time >= lower, Event.start_time < upper)
         .order_by(Event.start_time)
     )
 
@@ -382,19 +333,14 @@ async def _schedule_items(
         for lesson, event, student in lesson_rows.all()
     ]
 
-    lesson_event_ids = select(Lesson.event_id).where(
-        Lesson.event_id.is_not(None)
-    )
-
+    lesson_event_ids = select(Lesson.event_id).where(Lesson.event_id.is_not(None))
     personal_rows = await db.execute(
-        select(Event)
-        .where(
+        select(Event).where(
             Event.is_cancelled.is_(False),
             Event.start_time >= lower,
             Event.start_time < upper,
             ~Event.id.in_(lesson_event_ids),
-        )
-        .order_by(Event.start_time)
+        ).order_by(Event.start_time)
     )
 
     items.extend(
@@ -415,10 +361,7 @@ async def _schedule_items(
 
 
 @router.get("/schedule/today", response_model=List[ScheduleItem])
-async def today_schedule(
-    db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
-):
+async def today_schedule(db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
     today = datetime.now(LOCAL_TZ).date()
     return await _schedule_items(db, today, today)
 
@@ -433,8 +376,4 @@ async def week_schedule(
         datetime.now(LOCAL_TZ).date()
         - timedelta(days=datetime.now(LOCAL_TZ).weekday())
     )
-    return await _schedule_items(
-        db,
-        start,
-        start + timedelta(days=6),
-    )
+    return await _schedule_items(db, start, start + timedelta(days=6))
