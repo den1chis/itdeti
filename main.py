@@ -1,55 +1,54 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from contextlib import asynccontextmanager
-from core.database import engine, Base
+
 from core.config import settings
+from core.database import Base, engine
 
-
-import models.user
-import models.refresh_token
-import models.student
-import models.parent
-import models.course
-import models.student
-import models.parent
-import models.course
-
-import models.subscription
-import models.schedule
+import models.expense
+import models.lesson
 import models.notification
+import models.parent
+import models.payment
+import models.refresh_token
+import models.schedule
+import models.student
+import models.user
+
+from routers import auth, events, finance, lessons, notifications, students
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
-    async with engine.begin() as conn:
-        # Только для dev — в prod используем миграции Alembic
-        if settings.APP_ENV == "development":
+    if settings.APP_ENV == "development":
+        async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
     yield
-    # Shutdown
     await engine.dispose()
 
 
 app = FastAPI(
     title="itdeti AI System",
-    version="1.0.0",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # В prod заменить на конкретные домены
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Роутеры
-from routers import auth, students, schedule
 app.include_router(auth.router)
 app.include_router(students.router)
-app.include_router(schedule.router)
-from routers import auth, students, schedule, notifications
+app.include_router(lessons.router)
+app.include_router(finance.router)
+app.include_router(events.router)
 app.include_router(notifications.router)
+
 
 @app.get("/health")
 async def health():
@@ -58,9 +57,10 @@ async def health():
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(
         "main:app",
         host=settings.APP_HOST,
         port=settings.APP_PORT,
-        reload=settings.APP_ENV == "development",
+        reload=False,
     )
