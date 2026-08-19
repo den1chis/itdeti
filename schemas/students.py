@@ -1,35 +1,14 @@
-from pydantic import BaseModel, Field
-from typing import Optional, List
 from datetime import date, datetime
+from decimal import Decimal
+from typing import List, Optional
 import uuid
 
-
-# ── Course schemas ──────────────────────────────────────────
-class CourseCreate(BaseModel):
-    name: str
-    description: Optional[str] = None
-    total_lessons: int = 0
-    price_per_subscription: Optional[float] = None
-    lessons_per_subscription: int = 8
+from pydantic import BaseModel, ConfigDict, Field
 
 
-class CourseResponse(BaseModel):
-    id: uuid.UUID
-    name: str
-    description: Optional[str]
-    total_lessons: int
-    price_per_subscription: Optional[float]
-    lessons_per_subscription: int
-    is_active: bool
-
-    class Config:
-        from_attributes = True
-
-
-# ── Parent schemas ──────────────────────────────────────────
 class ParentCreate(BaseModel):
-    full_name: str
-    phone: str
+    full_name: str = Field(min_length=1)
+    phone: str = Field(min_length=1)
     whatsapp_phone: Optional[str] = None
     email: Optional[str] = None
 
@@ -42,6 +21,8 @@ class ParentUpdate(BaseModel):
 
 
 class ParentResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: uuid.UUID
     full_name: str
     phone: str
@@ -49,39 +30,51 @@ class ParentResponse(BaseModel):
     email: Optional[str]
     created_at: datetime
 
-    class Config:
-        from_attributes = True
 
-
-# ── Student schemas ─────────────────────────────────────────
 class StudentCreate(BaseModel):
-    full_name: str
+    full_name: str = Field(min_length=1)
     birth_date: Optional[date] = None
-    current_course_id: Optional[uuid.UUID] = None
-    level: str = Field(default="beginner", pattern="^(beginner|intermediate|advanced)$")
+    level: str = "beginner"
     notes: Optional[str] = None
-    parent_ids: Optional[List[uuid.UUID]] = []
+    balance: Decimal = Field(default=Decimal("0.00"), ge=0)
+    lesson_price: Decimal = Field(gt=0)
+    parent_ids: List[uuid.UUID] = Field(default_factory=list)
 
 
 class StudentUpdate(BaseModel):
-    full_name: Optional[str] = None
+    full_name: Optional[str] = Field(default=None, min_length=1)
     birth_date: Optional[date] = None
-    current_course_id: Optional[uuid.UUID] = None
-    level: Optional[str] = Field(default=None, pattern="^(beginner|intermediate|advanced)$")
+    level: Optional[str] = None
     notes: Optional[str] = None
+    lesson_price: Optional[Decimal] = Field(default=None, gt=0)
     is_active: Optional[bool] = None
 
 
 class StudentResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: uuid.UUID
+    user_id: Optional[uuid.UUID]
     full_name: str
     birth_date: Optional[date]
-    current_course_id: Optional[uuid.UUID]
-    level: str
+    level: Optional[str]
     notes: Optional[str]
+    balance: Decimal
+    lesson_price: Decimal
     is_active: bool
     created_at: datetime
-    parents: List[ParentResponse] = []
+    updated_at: datetime
+    remaining_lessons: int = 0
+    current_month_lessons: int = 0
+    current_month_due: Decimal = Decimal("0.00")
+    parents: List[ParentResponse] = Field(default_factory=list)
 
-    class Config:
-        from_attributes = True
+
+class BalanceResponse(BaseModel):
+    student_id: uuid.UUID
+    balance: Decimal
+    remaining_lessons: int
+    current_month_lessons: int
+    current_month_due: Decimal
+    payments_this_month: Decimal
+    monthly_debt: Decimal
