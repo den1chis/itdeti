@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Boolean, Integer, Date, Time, DateTime, ForeignKey, Text, Enum as SAEnum
+from sqlalchemy import Boolean, Column, Date, DateTime, ForeignKey, Integer, String, Text, Time, Enum as SAEnum
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 import uuid
@@ -12,11 +12,11 @@ class Event(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     title = Column(String, nullable=False)
     event_type = Column(
-        SAEnum("lesson", "personal", "meeting", "reminder", name="event_type"),
+        SAEnum("personal", "meeting", "reminder", name="event_type"),
         nullable=False,
         default="personal",
     )
-    start_time = Column(DateTime(timezone=True), nullable=False)
+    start_time = Column(DateTime(timezone=True), nullable=False, index=True)
     end_time = Column(DateTime(timezone=True), nullable=False)
     location = Column(String, nullable=True)
     notes = Column(Text, nullable=True)
