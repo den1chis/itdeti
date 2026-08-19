@@ -3,7 +3,7 @@ from typing import List, Optional
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
@@ -17,11 +17,7 @@ router = APIRouter(tags=["events"])
 
 
 @router.post("/events", response_model=EventResponse, status_code=201)
-async def create_event(
-    payload: EventCreate,
-    db: AsyncSession = Depends(get_db),
-    _: User = Depends(teacher_or_admin),
-):
+async def create_event(payload: EventCreate, db: AsyncSession = Depends(get_db), _: User = Depends(teacher_or_admin)):
     event = Event(**payload.model_dump())
     db.add(event)
     await db.commit()
@@ -37,9 +33,7 @@ async def list_events(
     db: AsyncSession = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
-    query = select(Event).where(
-        ~Event.id.in_(select(Lesson.event_id).where(Lesson.event_id.is_not(None)))
-    )
+    query = select(Event).where(~exists(select(1).where(Lesson.event_id == Event.id)))
     if not include_cancelled:
         query = query.where(Event.is_cancelled.is_(False))
     if from_date:
@@ -51,15 +45,12 @@ async def list_events(
 
 
 @router.patch("/events/{event_id}", response_model=EventResponse)
-async def update_event(
-    event_id: uuid.UUID,
-    payload: EventUpdate,
-    db: AsyncSession = Depends(get_db),
-    _: User = Depends(teacher_or_admin),
-):
+async def update_event(event_id: uuid.UUID, payload: EventUpdate, db: AsyncSession = Depends(get_db), _: User = Depends(teacher_or_admin)):
     event = await db.scalar(select(Event).where(Event.id == event_id).with_for_update())
     if not event:
         raise HTTPException(404, "Event not found")
+    if await db.scalar(select(Lesson.id).where(Lesson.event_id == event_id)):
+        raise HTTPException(400, "Lesson events must be managed through /lessons")
     for field, value in payload.model_dump(exclude_none=True).items():
         setattr(event, field, value)
     if event.end_time <= event.start_time:
@@ -70,11 +61,7 @@ async def update_event(
 
 
 @router.delete("/events/{event_id}", status_code=204)
-async def delete_event(
-    event_id: uuid.UUID,
-    db: AsyncSession = Depends(get_db),
-    _: User = Depends(teacher_or_admin),
-):
+async def delete_event(event_id: uuid.UUID, db: AsyncSession = Depends(get_db), _: User = Depends(teacher_or_admin)):
     event = await db.scalar(select(Event).where(Event.id == event_id).with_for_update())
     if not event:
         raise HTTPException(404, "Event not found")
