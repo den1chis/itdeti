@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, Date, DateTime, ForeignKey, Integer, String, Text, Time, Enum as SAEnum
+from sqlalchemy import Boolean, Column, Date, DateTime, ForeignKey, Integer, String, Text, Time, Enum as SAEnum, Index
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 import uuid
@@ -27,6 +27,16 @@ class Event(Base):
 
 class StudentScheduleSlot(Base):
     __tablename__ = "student_schedule"
+    __table_args__ = (
+        Index(
+            "uq_student_schedule_slot_identity",
+            "student_id",
+            "day_of_week",
+            "start_time",
+            "valid_from",
+            unique=True,
+        ),
+    )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     student_id = Column(
