@@ -1,4 +1,3 @@
-from calendar import monthrange
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from typing import List, Optional
@@ -6,7 +5,7 @@ from zoneinfo import ZoneInfo
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import and_, or_, select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
@@ -39,21 +38,13 @@ async def _ensure_schedule_lessons(db: AsyncSession, start: date, end: date) -> 
     for slot, student in slots_result.all():
         first = max(start, slot.valid_from)
         last = min(end, slot.valid_until) if slot.valid_until else end
-        current = first
-        delta = (slot.day_of_week - current.weekday()) % 7
-        current += timedelta(days=delta)
+        current = first + timedelta(days=(slot.day_of_week - first.weekday()) % 7)
         while current <= last:
             start_at = _occurrence_datetime(current, slot)
             existing = await db.scalar(
-                select(Lesson)
-                .where(
+                select(Lesson).where(
                     Lesson.schedule_slot_id == slot.id,
-                    or_(
-                        Lesson.original_start_time == start_at,
-                        Lesson.original_start_time.is_(None) & (Lesson.event_id.in_(
-                            select(Event.id).where(Event.start_time == start_at)
-                        )),
-                    ),
+                    Lesson.original_start_time == start_at,
                 )
             )
             if not existing:
@@ -74,6 +65,7 @@ async def _ensure_schedule_lessons(db: AsyncSession, start: date, end: date) -> 
                         status="scheduled",
                         price=student.lesson_price,
                         schedule_slot_id=slot.id,
+                        original_start_time=start_at,
                     )
                 )
             current += timedelta(days=7)
@@ -146,6 +138,7 @@ async def create_lesson(
         teacher_notes=payload.teacher_notes,
         price=price,
         schedule_slot_id=payload.schedule_slot_id,
+        original_start_time=payload.start_time if payload.schedule_slot_id else None,
     )
     db.add(lesson)
     await db.commit()
@@ -164,11 +157,8 @@ async def list_lessons(
 ):
     if from_date and to_date and to_date < from_date:
         raise HTTPException(400, "to_date must be on or after from_date")
-    if from_date and to_date:
-        await _ensure_schedule_lessons(db, from_date, to_date)
-        await db.commit()
-    elif from_date:
-        await _ensure_schedule_lessons(db, from_date, from_date)
+    if from_date:
+        await _ensure_schedule_lessons(db, from_date, to_date or from_date)
         await db.commit()
 
     query = select(Lesson).join(Event, Event.id == Lesson.event_id)
@@ -177,8 +167,7 @@ async def list_lessons(
     if from_date:
         query = query.where(Event.start_time >= datetime.combine(from_date, time.min).replace(tzinfo=LOCAL_TZ))
     if to_date:
-        upper = to_date + timedelta(days=1)
-        query = query.where(Event.start_time < datetime.combine(upper, time.min).replace(tzinfo=LOCAL_TZ))
+        query = query.where(Event.start_time < datetime.combine(to_date + timedelta(days=1), time.min).replace(tzinfo=LOCAL_TZ))
     if status:
         query = query.where(Lesson.status == status)
     result = await db.execute(query.order_by(Event.start_time.desc()))
@@ -200,11 +189,8 @@ async def update_lesson(
     if not event or not student:
         raise HTTPException(500, "Lesson data is incomplete")
 
-    old_status = lesson.status
-    old_deducted = lesson.balance_deducted
-
     if payload.start_time is not None:
-        if lesson.original_start_time is None:
+        if lesson.original_start_time is None and lesson.schedule_slot_id:
             lesson.original_start_time = event.start_time
         duration = payload.duration_minutes or int((event.end_time - event.start_time).total_seconds() // 60)
         event.start_time = payload.start_time
@@ -217,9 +203,6 @@ async def update_lesson(
         value = getattr(payload, field)
         if value is not None:
             setattr(lesson, field, value)
-
-    if lesson.status == "completed" and lesson.lesson_type == "trial":
-        lesson.balance_deducted = False
 
     should_deduct = lesson.status == "completed" and lesson.lesson_type != "trial"
     if should_deduct and not lesson.balance_deducted:
@@ -237,9 +220,9 @@ async def update_lesson(
 async def _schedule_items(db: AsyncSession, start: date, end: date) -> list[ScheduleItem]:
     await _ensure_schedule_lessons(db, start, end)
     await db.commit()
-
     lower = datetime.combine(start, time.min).replace(tzinfo=LOCAL_TZ)
     upper = datetime.combine(end + timedelta(days=1), time.min).replace(tzinfo=LOCAL_TZ)
+
     lesson_rows = await db.execute(
         select(Lesson, Event, Student)
         .join(Event, Event.id == Lesson.event_id)
@@ -267,15 +250,14 @@ async def _schedule_items(db: AsyncSession, start: date, end: date) -> list[Sche
         for lesson, event, student in lesson_rows.all()
     ]
 
+    lesson_event_ids = select(Lesson.event_id).where(Lesson.event_id.is_not(None))
     personal_rows = await db.execute(
-        select(Event)
-        .where(
+        select(Event).where(
             Event.is_cancelled.is_(False),
             Event.start_time >= lower,
             Event.start_time < upper,
-            ~Event.id.in_(select(Lesson.event_id).where(Lesson.event_id.is_not(None))),
-        )
-        .order_by(Event.start_time)
+            ~Event.id.in_(lesson_event_ids),
+        ).order_by(Event.start_time)
     )
     items.extend(
         ScheduleItem(
@@ -286,7 +268,6 @@ async def _schedule_items(db: AsyncSession, start: date, end: date) -> list[Sche
             start_time=event.start_time,
             end_time=event.end_time,
             location=event.location,
-            is_cancelled=event.is_cancelled,
         )
         for event in personal_rows.scalars().all()
     )
