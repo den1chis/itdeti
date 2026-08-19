@@ -1,55 +1,100 @@
-# FunCode AI System — Backend
+# itdeti AI System — Backend
 
-## Структура проекта
-```
-app/
-├── main.py                  # Точка входа
-├── requirements.txt
-├── Dockerfile
-├── .env.example             # Скопируйте в .env и заполните
-│
-├── core/
-│   ├── config.py            # Настройки из .env
-│   ├── database.py          # Async SQLAlchemy + сессия
-│   ├── security.py          # JWT, bcrypt
-│   └── dependencies.py      # Depends: get_current_user, admin_only
-│
-├── models/                  # SQLAlchemy ORM модели
-│   ├── user.py
-│   └── refresh_token.py
-│
-├── schemas/                 # Pydantic схемы (request/response)
-│   └── auth.py
-│
-├── routers/                 # FastAPI роутеры
-│   └── auth.py
-│
-└── services/                # Бизнес-логика (следующие модули)
+FastAPI backend for the itdeti programming school management system.
+
+## Stack
+
+- Python 3.12
+- FastAPI
+- SQLAlchemy 2.x async
+- asyncpg
+- PostgreSQL / Supabase
+- JWT + direct bcrypt
+- Docker / Render
+
+## Database
+
+The application is designed for the Supabase **Session Pooler** on port `5432`.
+The SQLAlchemy engine uses:
+
+```python
+connect_args={"ssl": "require"}
 ```
 
-## Запуск локально
+Run `supabase/migrations/001_reset_school_schema.sql` in Supabase SQL Editor before the first start of the new version.
+
+The migration preserves only:
+
+- `users`
+- `refresh_tokens`
+- `incoming_notifications`
+
+All school/business tables are recreated.
+
+## Environment
+
+Copy `.env.example` to `.env` locally and fill in real values. Never commit `.env`.
+
+For Supabase use a connection string based on the Session Pooler (`:5432`), not the Transaction Pooler (`:6543`).
+
+## Local run
+
 ```bash
-cp .env.example .env
-# Заполните .env
-
 pip install -r requirements.txt
-python main.py
+python -m uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-## API Docs
-После запуска: http://localhost:8000/docs
+API documentation:
 
-## Первый запуск — создание админа
-```
-POST /auth/setup-admin?email=denis@funcode.kz&password=YOUR_PASS&full_name=Денис Александрович
-```
-После создания удалите этот эндпоинт из routers/auth.py
+`http://localhost:8000/docs`
 
-## Endpoints
-| Method | URL | Auth | Описание |
-|--------|-----|------|----------|
-| POST | /auth/login | — | Логин, получить токены |
-| POST | /auth/refresh | — | Обновить access token |
-| POST | /auth/logout | — | Инвалидировать refresh token |
-| GET | /auth/me | ✅ | Текущий пользователь |
-| GET | /health | — | Статус сервера |
+## Main API
+
+### Auth
+
+- `POST /auth/login`
+- `POST /auth/refresh`
+- `POST /auth/logout`
+- `GET /auth/me`
+
+### Students
+
+- `POST /students`
+- `GET /students`
+- `GET /students/{id}`
+- `PATCH /students/{id}`
+- `DELETE /students/{id}`
+- `POST /students/{id}/schedule`
+- `GET /students/{id}/schedule`
+- `PATCH /students/{id}/schedule/{slot_id}`
+- `DELETE /students/{id}/schedule/{slot_id}`
+- `GET /students/{id}/balance`
+
+### Lessons and calendar
+
+- `POST /lessons`
+- `GET /lessons`
+- `PATCH /lessons/{id}`
+- `GET /schedule/today`
+- `GET /schedule/week`
+- `POST /events`
+- `GET /events`
+- `PATCH /events/{id}`
+- `DELETE /events/{id}`
+
+### Finance
+
+- `POST /payments`
+- `GET /payments`
+- `POST /expenses`
+- `GET /expenses`
+- `GET /finance/summary`
+- `GET /finance/transactions`
+
+### Notifications
+
+- `POST /notifications`
+- `GET /notifications`
+- `POST /notifications/{id}/confirm`
+
+Kaspi/WhatsApp notifications are stored and parsed, but payment creation remains an explicit financial operation. AI automation can be connected later through Claude.
