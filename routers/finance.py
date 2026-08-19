@@ -2,10 +2,12 @@ from calendar import monthrange
 from datetime import date, datetime, timedelta, time
 from decimal import Decimal
 from typing import List, Optional
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
 from core.dependencies import get_current_user, teacher_or_admin
@@ -15,16 +17,14 @@ from models.payment import Payment
 from models.schedule import StudentScheduleSlot
 from models.student import Student
 from models.user import User
-from schemas.finance import (
-    ExpenseCreate,
-    ExpenseResponse,
-    FinanceSummary,
-    PaymentCreate,
-    PaymentResponse,
-    TransactionItem,
-)
+from schemas.finance import ExpenseCreate, ExpenseResponse, FinanceSummary, PaymentCreate, PaymentResponse, TransactionItem
 
-router = APIRouter(prefix="/finance", tags=["finance"])
+router = APIRouter(tags=["finance"])
+LOCAL_TZ = ZoneInfo("Asia/Almaty")
+
+
+def _local_start(value: date) -> datetime:
+    return datetime.combine(value, time.min).replace(tzinfo=LOCAL_TZ)
 
 
 def _occurrences(slot: StudentScheduleSlot, start: date, end: date) -> int:
@@ -55,9 +55,9 @@ async def _schedule_counts(db: AsyncSession, start: date, end: date) -> tuple[in
     count = 0
     income = Decimal("0.00")
     for slot, price in result.all():
-        n = _occurrences(slot, start, end)
-        count += n
-        income += Decimal(price) * n
+        occurrences = _occurrences(slot, start, end)
+        count += occurrences
+        income += Decimal(price) * occurrences
     return count, income
 
 
@@ -82,25 +82,16 @@ async def _sum_expenses(db: AsyncSession, start: date, end: date) -> Decimal:
 
 
 @router.post("/payments", response_model=PaymentResponse, status_code=201)
-async def create_payment(
-    payload: PaymentCreate,
-    db: AsyncSession = Depends(get_db),
-    _: User = Depends(teacher_or_admin),
-):
+async def create_payment(payload: PaymentCreate, db: AsyncSession = Depends(get_db), _: User = Depends(teacher_or_admin)):
     student = await db.scalar(select(Student).where(Student.id == payload.student_id).with_for_update())
     if not student:
         raise HTTPException(404, "Student not found")
 
     if payload.kaspi_notification_id:
-        notification = await db.scalar(
-            select(Notification).where(Notification.id == payload.kaspi_notification_id)
-        )
+        notification = await db.scalar(select(Notification).where(Notification.id == payload.kaspi_notification_id))
         if not notification:
             raise HTTPException(404, "Kaspi notification not found")
-        duplicate = await db.scalar(
-            select(Payment.id).where(Payment.kaspi_notification_id == payload.kaspi_notification_id)
-        )
-        if duplicate:
+        if await db.scalar(select(Payment.id).where(Payment.kaspi_notification_id == payload.kaspi_notification_id)):
             raise HTTPException(409, "This notification is already attached to a payment")
 
     payment = Payment(
@@ -110,16 +101,18 @@ async def create_payment(
         payment_method=payload.payment_method,
         kaspi_notification_id=payload.kaspi_notification_id,
         comment=payload.comment,
-        recorded_at=payload.recorded_at or datetime.now().astimezone(),
+        recorded_at=payload.recorded_at or datetime.now(LOCAL_TZ),
     )
     db.add(payment)
     student.balance = Decimal(student.balance) + Decimal(payload.amount)
+
     if payload.kaspi_notification_id:
         notification = await db.scalar(select(Notification).where(Notification.id == payload.kaspi_notification_id))
         if notification:
             notification.is_processed = True
             notification.action_taken = "payment_recorded"
-            notification.processed_at = datetime.now().astimezone()
+            notification.processed_at = datetime.now(LOCAL_TZ)
+
     await db.commit()
     await db.refresh(payment)
     return payment
@@ -127,7 +120,7 @@ async def create_payment(
 
 @router.get("/payments", response_model=List[PaymentResponse])
 async def list_payments(
-    student_id: Optional[str] = None,
+    student_id: Optional[UUID] = None,
     from_date: Optional[date] = None,
     to_date: Optional[date] = None,
     db: AsyncSession = Depends(get_db),
@@ -137,19 +130,15 @@ async def list_payments(
     if student_id:
         query = query.where(Payment.student_id == student_id)
     if from_date:
-        query = query.where(Payment.recorded_at >= datetime.combine(from_date, time.min).astimezone())
+        query = query.where(Payment.recorded_at >= _local_start(from_date))
     if to_date:
-        query = query.where(Payment.recorded_at < datetime.combine(to_date + timedelta(days=1), time.min).astimezone())
+        query = query.where(Payment.recorded_at < _local_start(to_date + timedelta(days=1)))
     result = await db.execute(query)
     return result.scalars().all()
 
 
 @router.post("/expenses", response_model=ExpenseResponse, status_code=201)
-async def create_expense(
-    payload: ExpenseCreate,
-    db: AsyncSession = Depends(get_db),
-    _: User = Depends(teacher_or_admin),
-):
+async def create_expense(payload: ExpenseCreate, db: AsyncSession = Depends(get_db), _: User = Depends(teacher_or_admin)):
     expense = Expense(**payload.model_dump())
     db.add(expense)
     await db.commit()
@@ -179,14 +168,14 @@ async def list_expenses(
     return result.scalars().all()
 
 
-@router.get("/summary", response_model=FinanceSummary)
+@router.get("/finance/summary", response_model=FinanceSummary)
 async def finance_summary(
     year: Optional[int] = None,
     month: Optional[int] = None,
     db: AsyncSession = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
-    today = date.today()
+    today = datetime.now(LOCAL_TZ).date()
     year = year or today.year
     month = month or today.month
     if month < 1 or month > 12:
@@ -195,11 +184,7 @@ async def finance_summary(
     month_start = date(year, month, 1)
     month_end = date(year, month, monthrange(year, month)[1])
     next_month = month_end + timedelta(days=1)
-    income = await _sum_payments(
-        db,
-        datetime.combine(month_start, time.min).astimezone(),
-        datetime.combine(next_month, time.min).astimezone(),
-    )
+    income = await _sum_payments(db, _local_start(month_start), _local_start(next_month))
     expense_total = await _sum_expenses(db, month_start, month_end)
 
     categories_result = await db.execute(
@@ -215,7 +200,7 @@ async def finance_summary(
 
     scheduled_count, scheduled_income = await _schedule_counts(db, month_start, month_end)
     forecast_start = max(today, month_start)
-    forecast_count, forecast_income = await _schedule_counts(db, forecast_start, month_end)
+    _, forecast_income = await _schedule_counts(db, forecast_start, month_end)
 
     return FinanceSummary(
         month_start=month_start,
@@ -231,12 +216,8 @@ async def finance_summary(
     )
 
 
-@router.get("/transactions", response_model=List[TransactionItem])
-async def transactions(
-    limit: int = 100,
-    db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
-):
+@router.get("/finance/transactions", response_model=List[TransactionItem])
+async def transactions(limit: int = 100, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
     limit = max(1, min(limit, 500))
     payments = await db.execute(
         select(Payment, Student.full_name)
@@ -244,36 +225,28 @@ async def transactions(
         .order_by(Payment.recorded_at.desc())
         .limit(limit)
     )
-    expenses = await db.execute(
-        select(Expense)
-        .order_by(Expense.created_at.desc())
-        .limit(limit)
-    )
+    expenses = await db.execute(select(Expense).order_by(Expense.created_at.desc()).limit(limit))
+
     items: list[TransactionItem] = []
     for payment, student_name in payments.all():
-        items.append(
-            TransactionItem(
-                id=payment.id,
-                operation_type="income",
-                amount=payment.amount,
-                date=payment.recorded_at,
-                student_id=payment.student_id,
-                student_name=student_name,
-                payment_method=payment.payment_method,
-                description=payment.comment,
-            )
-        )
+        items.append(TransactionItem(
+            id=payment.id,
+            operation_type="income",
+            amount=payment.amount,
+            date=payment.recorded_at,
+            student_id=payment.student_id,
+            student_name=student_name,
+            payment_method=payment.payment_method,
+            description=payment.comment,
+        ))
     for expense in expenses.scalars().all():
-        items.append(
-            TransactionItem(
-                id=expense.id,
-                operation_type="expense",
-                amount=expense.amount,
-                date=datetime.combine(expense.expense_date, time.min).astimezone(),
-                category=expense.category,
-                payment_method=expense.payment_method,
-                description=expense.description,
-            )
-        )
+        items.append(TransactionItem(
+            id=expense.id,
+            operation_type="expense",
+            amount=expense.amount,
+            date=_local_start(expense.expense_date),
+            category=expense.category,
+            payment_method=expense.payment_method,
+            description=expense.description,
+        ))
     return sorted(items, key=lambda item: item.date, reverse=True)[:limit]
-
