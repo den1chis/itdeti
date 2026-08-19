@@ -12,6 +12,7 @@ class PaymentCreate(BaseModel):
     payment_method: str = Field(default="cash", pattern="^(kaspi|cash|transfer|other)$")
     parent_id: Optional[uuid.UUID] = None
     kaspi_notification_id: Optional[uuid.UUID] = None
+    request_id: Optional[str] = Field(default=None, min_length=1, max_length=64)
     comment: Optional[str] = None
     recorded_at: Optional[datetime] = None
 
@@ -25,6 +26,7 @@ class PaymentResponse(BaseModel):
     amount: Decimal
     payment_method: str
     kaspi_notification_id: Optional[uuid.UUID]
+    request_id: Optional[str]
     comment: Optional[str]
     recorded_at: datetime
 
