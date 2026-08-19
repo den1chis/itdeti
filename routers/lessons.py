@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import or_, select
+from sqlalchemy import exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
@@ -97,15 +97,11 @@ async def _lesson_response(db: AsyncSession, lesson: Lesson) -> LessonResponse:
 
 
 @router.post("/lessons", response_model=LessonResponse, status_code=201)
-async def create_lesson(
-    payload: LessonCreate,
-    db: AsyncSession = Depends(get_db),
-    _: User = Depends(teacher_or_admin),
-):
+async def create_lesson(payload: LessonCreate, db: AsyncSession = Depends(get_db), _: User = Depends(teacher_or_admin)):
     student = await db.scalar(select(Student).where(Student.id == payload.student_id).with_for_update())
     if not student:
         raise HTTPException(404, "Student not found")
-
+    slot = None
     if payload.schedule_slot_id:
         slot = await db.scalar(
             select(StudentScheduleSlot).where(
@@ -138,7 +134,10 @@ async def create_lesson(
         teacher_notes=payload.teacher_notes,
         price=price,
         schedule_slot_id=payload.schedule_slot_id,
-        original_start_time=payload.start_time if payload.schedule_slot_id else None,
+        original_start_time=(
+            _occurrence_datetime(payload.start_time.date(), slot)
+            if slot else None
+        ),
     )
     db.add(lesson)
     await db.commit()
@@ -160,7 +159,6 @@ async def list_lessons(
     if from_date:
         await _ensure_schedule_lessons(db, from_date, to_date or from_date)
         await db.commit()
-
     query = select(Lesson).join(Event, Event.id == Lesson.event_id)
     if student_id:
         query = query.where(Lesson.student_id == student_id)
@@ -190,11 +188,13 @@ async def update_lesson(
         raise HTTPException(500, "Lesson data is incomplete")
 
     if payload.start_time is not None:
-        if lesson.original_start_time is None and lesson.schedule_slot_id:
-            lesson.original_start_time = event.start_time
         duration = payload.duration_minutes or int((event.end_time - event.start_time).total_seconds() // 60)
         event.start_time = payload.start_time
         event.end_time = payload.start_time + timedelta(minutes=duration)
+        if lesson.original_start_time is None and lesson.schedule_slot_id:
+            lesson.original_start_time = _occurrence_datetime(event.start_time.date(), await db.scalar(
+                select(StudentScheduleSlot).where(StudentScheduleSlot.id == lesson.schedule_slot_id)
+            ))
         lesson.status = "rescheduled"
     elif payload.duration_minutes is not None:
         event.end_time = event.start_time + timedelta(minutes=payload.duration_minutes)
@@ -250,13 +250,12 @@ async def _schedule_items(db: AsyncSession, start: date, end: date) -> list[Sche
         for lesson, event, student in lesson_rows.all()
     ]
 
-    lesson_event_ids = select(Lesson.event_id).where(Lesson.event_id.is_not(None))
     personal_rows = await db.execute(
         select(Event).where(
             Event.is_cancelled.is_(False),
             Event.start_time >= lower,
             Event.start_time < upper,
-            ~Event.id.in_(lesson_event_ids),
+            ~exists(select(1).where(Lesson.event_id == Event.id)),
         ).order_by(Event.start_time)
     )
     items.extend(
