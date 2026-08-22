@@ -44,6 +44,7 @@ class ScheduleSlotResponse(BaseModel):
 
 class LessonCreate(BaseModel):
     student_id: uuid.UUID
+    lesson_kind: str = Field(default="lesson", pattern="^(lesson|masterclass)$")
     lesson_type: str = Field(default="regular", pattern="^(regular|trial|extra)$")
     start_time: datetime
     duration_minutes: int = Field(default=60, ge=15, le=480)
@@ -54,18 +55,22 @@ class LessonCreate(BaseModel):
 
 
 class LessonUpdate(BaseModel):
+    lesson_kind: Optional[str] = Field(default=None, pattern="^(lesson|masterclass)$")
+    lesson_type: Optional[str] = Field(default=None, pattern="^(regular|trial|extra)$")
     status: Optional[str] = Field(default=None, pattern="^(scheduled|completed|cancelled|rescheduled)$")
     topic: Optional[str] = None
     is_attended: Optional[bool] = None
     teacher_notes: Optional[str] = None
     start_time: Optional[datetime] = None
     duration_minutes: Optional[int] = Field(default=None, ge=15, le=480)
+    price: Optional[Decimal] = Field(default=None, ge=0)
 
 
 class LessonResponse(BaseModel):
     id: uuid.UUID
     event_id: Optional[uuid.UUID]
     student_id: uuid.UUID
+    lesson_kind: str
     lesson_type: str
     status: str
     topic: Optional[str]
@@ -90,9 +95,10 @@ class ScheduleItem(BaseModel):
     end_time: datetime
     student_id: Optional[uuid.UUID] = None
     student_name: Optional[str] = None
+    lesson_kind: Optional[str] = None
     lesson_type: Optional[str] = None
     lesson_status: Optional[str] = None
-    price: Optional[Decimal] = None
+    lesson_price: Optional[Decimal] = None
     topic: Optional[str] = None
     location: Optional[str] = None
     is_cancelled: bool = False
