@@ -1,7 +1,7 @@
 from calendar import monthrange
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
-from typing import List, Optional
+from typing import List
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -31,45 +31,31 @@ from schemas.students import (
 router = APIRouter(tags=["students"])
 
 
-def _days_in_period(slot: StudentScheduleSlot, start: date, end: date) -> int:
+def _period_occurrences(slot: StudentScheduleSlot, start: date, end: date) -> int:
     if end < start or not slot.is_active:
         return 0
     actual_start = max(start, slot.valid_from)
     actual_end = min(end, slot.valid_until) if slot.valid_until else end
     if actual_end < actual_start:
         return 0
-    first_delta = (slot.day_of_week - actual_start.weekday()) % 7
-    first = actual_start + timedelta(days=first_delta)
+    first = actual_start + timedelta(days=(slot.day_of_week - actual_start.weekday()) % 7)
     if first > actual_end:
         return 0
     return ((actual_end - first).days // 7) + 1
 
 
-async def _month_stats(
-    db: AsyncSession,
-    student: Student,
-    year: int,
-    month: int,
-) -> tuple[int, Decimal]:
+async def _month_stats(db: AsyncSession, student: Student, year: int, month: int):
     start = date(year, month, 1)
     end = date(year, month, monthrange(year, month)[1])
     result = await db.execute(
-        select(StudentScheduleSlot).where(
-            StudentScheduleSlot.student_id == student.id
-        )
+        select(StudentScheduleSlot).where(StudentScheduleSlot.student_id == student.id)
     )
     slots = result.scalars().all()
-    count = sum(
-        _days_in_period(slot, start, end)
-        for slot in slots
-    )
+    count = sum(_period_occurrences(slot, start, end) for slot in slots)
     return count, Decimal(count) * Decimal(student.lesson_price)
 
 
-async def _load_parents(
-    db: AsyncSession,
-    student_id: UUID,
-) -> list[Parent]:
+async def _parents_for_student(db: AsyncSession, student_id: UUID) -> list[Parent]:
     result = await db.execute(
         select(Parent)
         .join(StudentParent, StudentParent.parent_id == Parent.id)
@@ -79,28 +65,16 @@ async def _load_parents(
     return list(result.scalars().all())
 
 
-async def _to_response(
-    db: AsyncSession,
-    student: Student,
-) -> StudentResponse:
-    now = date.today()
-    month_lessons, month_due = await _month_stats(
-        db,
-        student,
-        now.year,
-        now.month,
-    )
-    remaining = int(
-        max(Decimal("0"), Decimal(student.balance))
-        // Decimal(student.lesson_price)
-    )
-
+async def _student_response(db: AsyncSession, student: Student) -> StudentResponse:
+    today = date.today()
+    current_lessons, current_due = await _month_stats(db, student, today.year, today.month)
+    remaining = int(max(Decimal("0"), Decimal(student.balance)) // Decimal(student.lesson_price))
     return StudentResponse(
         id=student.id,
         user_id=student.user_id,
         full_name=student.full_name,
         birth_date=student.birth_date,
-        level=student.level,
+        course=student.course,
         notes=student.notes,
         balance=student.balance,
         lesson_price=student.lesson_price,
@@ -108,18 +82,14 @@ async def _to_response(
         created_at=student.created_at,
         updated_at=student.updated_at,
         remaining_lessons=remaining,
-        current_month_lessons=month_lessons,
-        current_month_due=month_due,
-        parents=await _load_parents(db, student.id),
+        current_month_lessons=current_lessons,
+        current_month_due=current_due,
+        parents=await _parents_for_student(db, student.id),
     )
 
 
 @router.post("/parents", response_model=ParentResponse, status_code=201)
-async def create_parent(
-    payload: ParentCreate,
-    db: AsyncSession = Depends(get_db),
-    _: User = Depends(teacher_or_admin),
-):
+async def create_parent(payload: ParentCreate, db: AsyncSession = Depends(get_db), _: User = Depends(teacher_or_admin)):
     parent = Parent(**payload.model_dump())
     db.add(parent)
     await db.commit()
@@ -128,223 +98,116 @@ async def create_parent(
 
 
 @router.get("/parents", response_model=List[ParentResponse])
-async def list_parents(
-    db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
-):
-    result = await db.execute(
-        select(Parent).order_by(Parent.full_name)
-    )
+async def list_parents(db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+    result = await db.execute(select(Parent).order_by(Parent.full_name))
     return result.scalars().all()
 
 
 @router.get("/parents/{parent_id}", response_model=ParentResponse)
-async def get_parent(
-    parent_id: UUID,
-    db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
-):
-    parent = await db.scalar(
-        select(Parent).where(Parent.id == parent_id)
-    )
+async def get_parent(parent_id: UUID, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+    parent = await db.scalar(select(Parent).where(Parent.id == parent_id))
     if not parent:
         raise HTTPException(404, "Parent not found")
     return parent
 
 
 @router.patch("/parents/{parent_id}", response_model=ParentResponse)
-async def update_parent(
-    parent_id: UUID,
-    payload: ParentUpdate,
-    db: AsyncSession = Depends(get_db),
-    _: User = Depends(teacher_or_admin),
-):
-    parent = await db.scalar(
-        select(Parent).where(Parent.id == parent_id)
-    )
+async def update_parent(parent_id: UUID, payload: ParentUpdate, db: AsyncSession = Depends(get_db), _: User = Depends(teacher_or_admin)):
+    parent = await db.scalar(select(Parent).where(Parent.id == parent_id).with_for_update())
     if not parent:
         raise HTTPException(404, "Parent not found")
-
     for field, value in payload.model_dump(exclude_none=True).items():
         setattr(parent, field, value)
-
     await db.commit()
     await db.refresh(parent)
     return parent
 
 
 @router.post("/students", response_model=StudentResponse, status_code=201)
-async def create_student(
-    payload: StudentCreate,
-    db: AsyncSession = Depends(get_db),
-    _: User = Depends(teacher_or_admin),
-):
-    student = Student(
-        **payload.model_dump(exclude={"parent_ids"})
-    )
+async def create_student(payload: StudentCreate, db: AsyncSession = Depends(get_db), _: User = Depends(teacher_or_admin)):
+    if payload.balance < 0:
+        raise HTTPException(400, "Initial balance cannot be negative")
+    student = Student(**payload.model_dump(exclude={"parent_ids"}))
     db.add(student)
     await db.flush()
-
     for parent_id in payload.parent_ids:
-        parent = await db.scalar(
-            select(Parent).where(Parent.id == parent_id)
-        )
-        if not parent:
-            raise HTTPException(
-                404,
-                f"Parent {parent_id} not found",
-            )
-        db.add(
-            StudentParent(
-                student_id=student.id,
-                parent_id=parent_id,
-            )
-        )
-
+        if not await db.scalar(select(Parent.id).where(Parent.id == parent_id)):
+            raise HTTPException(404, f"Parent {parent_id} not found")
+        db.add(StudentParent(student_id=student.id, parent_id=parent_id))
     await db.commit()
     await db.refresh(student)
-    return await _to_response(db, student)
+    return await _student_response(db, student)
 
 
 @router.get("/students", response_model=List[StudentResponse])
-async def list_students(
-    active_only: bool = True,
-    db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
-):
+async def list_students(active_only: bool = True, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
     query = select(Student).order_by(Student.full_name)
     if active_only:
         query = query.where(Student.is_active.is_(True))
     result = await db.execute(query)
-    return [
-        await _to_response(db, student)
-        for student in result.scalars().all()
-    ]
+    return [await _student_response(db, student) for student in result.scalars().all()]
 
 
 @router.get("/students/{student_id}", response_model=StudentResponse)
-async def get_student(
-    student_id: UUID,
-    db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
-):
-    student = await db.scalar(
-        select(Student).where(Student.id == student_id)
-    )
+async def get_student(student_id: UUID, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+    student = await db.scalar(select(Student).where(Student.id == student_id))
     if not student:
         raise HTTPException(404, "Student not found")
-    return await _to_response(db, student)
+    return await _student_response(db, student)
 
 
 @router.patch("/students/{student_id}", response_model=StudentResponse)
-async def update_student(
-    student_id: UUID,
-    payload: StudentUpdate,
-    db: AsyncSession = Depends(get_db),
-    _: User = Depends(teacher_or_admin),
-):
-    student = await db.scalar(
-        select(Student)
-        .where(Student.id == student_id)
-        .with_for_update()
-    )
+async def update_student(student_id: UUID, payload: StudentUpdate, db: AsyncSession = Depends(get_db), _: User = Depends(teacher_or_admin)):
+    student = await db.scalar(select(Student).where(Student.id == student_id).with_for_update())
     if not student:
         raise HTTPException(404, "Student not found")
-
-    for field, value in payload.model_dump(exclude_none=True).items():
+    changes = payload.model_dump(exclude_none=True)
+    if "balance" in changes and Decimal(changes["balance"]) < 0:
+        raise HTTPException(400, "Balance cannot be negative")
+    for field, value in changes.items():
         setattr(student, field, value)
-
     await db.commit()
     await db.refresh(student)
-    return await _to_response(db, student)
+    return await _student_response(db, student)
 
 
 @router.delete("/students/{student_id}", status_code=204)
-async def deactivate_student(
-    student_id: UUID,
-    db: AsyncSession = Depends(get_db),
-    _: User = Depends(admin_only),
-):
-    student = await db.scalar(
-        select(Student)
-        .where(Student.id == student_id)
-        .with_for_update()
-    )
+async def deactivate_student(student_id: UUID, db: AsyncSession = Depends(get_db), _: User = Depends(admin_only)):
+    student = await db.scalar(select(Student).where(Student.id == student_id).with_for_update())
     if not student:
         raise HTTPException(404, "Student not found")
-
     student.is_active = False
+    await db.execute(
+        StudentScheduleSlot.__table__.update()
+        .where(StudentScheduleSlot.student_id == student_id)
+        .values(is_active=False, valid_until=date.today())
+    )
     await db.commit()
 
 
 @router.post("/students/{student_id}/parents/{parent_id}", status_code=201)
-async def link_parent(
-    student_id: UUID,
-    parent_id: UUID,
-    db: AsyncSession = Depends(get_db),
-    _: User = Depends(teacher_or_admin),
-):
-    if not await db.scalar(
-        select(Student.id).where(Student.id == student_id)
-    ):
+async def link_parent(student_id: UUID, parent_id: UUID, db: AsyncSession = Depends(get_db), _: User = Depends(teacher_or_admin)):
+    if not await db.scalar(select(Student.id).where(Student.id == student_id)):
         raise HTTPException(404, "Student not found")
-
-    if not await db.scalar(
-        select(Parent.id).where(Parent.id == parent_id)
-    ):
+    if not await db.scalar(select(Parent.id).where(Parent.id == parent_id)):
         raise HTTPException(404, "Parent not found")
-
-    exists = await db.scalar(
-        select(StudentParent).where(
-            StudentParent.student_id == student_id,
-            StudentParent.parent_id == parent_id,
-        )
-    )
-    if exists:
+    if await db.scalar(select(StudentParent).where(StudentParent.student_id == student_id, StudentParent.parent_id == parent_id)):
         raise HTTPException(409, "Parent already linked")
-
-    db.add(
-        StudentParent(
-            student_id=student_id,
-            parent_id=parent_id,
-        )
-    )
+    db.add(StudentParent(student_id=student_id, parent_id=parent_id))
     await db.commit()
     return {"detail": "Parent linked"}
 
 
 @router.delete("/students/{student_id}/parents/{parent_id}", status_code=204)
-async def unlink_parent(
-    student_id: UUID,
-    parent_id: UUID,
-    db: AsyncSession = Depends(get_db),
-    _: User = Depends(teacher_or_admin),
-):
-    await db.execute(
-        delete(StudentParent).where(
-            StudentParent.student_id == student_id,
-            StudentParent.parent_id == parent_id,
-        )
-    )
+async def unlink_parent(student_id: UUID, parent_id: UUID, db: AsyncSession = Depends(get_db), _: User = Depends(teacher_or_admin)):
+    await db.execute(delete(StudentParent).where(StudentParent.student_id == student_id, StudentParent.parent_id == parent_id))
     await db.commit()
 
 
-@router.post(
-    "/students/{student_id}/schedule",
-    response_model=ScheduleSlotResponse,
-    status_code=201,
-)
-async def create_schedule_slot(
-    student_id: UUID,
-    payload: ScheduleSlotCreate,
-    db: AsyncSession = Depends(get_db),
-    _: User = Depends(teacher_or_admin),
-):
-    if not await db.scalar(
-        select(Student.id).where(Student.id == student_id)
-    ):
-        raise HTTPException(404, "Student not found")
-
+@router.post("/students/{student_id}/schedule", response_model=ScheduleSlotResponse, status_code=201)
+async def create_schedule_slot(student_id: UUID, payload: ScheduleSlotCreate, db: AsyncSession = Depends(get_db), _: User = Depends(teacher_or_admin)):
+    if not await db.scalar(select(Student.id).where(Student.id == student_id, Student.is_active.is_(True))):
+        raise HTTPException(404, "Active student not found")
     duplicate = await db.scalar(
         select(StudentScheduleSlot).where(
             StudentScheduleSlot.student_id == student_id,
@@ -353,280 +216,139 @@ async def create_schedule_slot(
             StudentScheduleSlot.valid_from == payload.valid_from,
         )
     )
-
     if duplicate:
-        raise HTTPException(
-            409,
-            "An identical schedule slot already exists",
-        )
-
-    slot = StudentScheduleSlot(
-        student_id=student_id,
-        **payload.model_dump(),
-    )
+        raise HTTPException(409, "This schedule entry already exists")
+    slot = StudentScheduleSlot(student_id=student_id, **payload.model_dump())
     db.add(slot)
-
     try:
         await db.commit()
     except IntegrityError as exc:
         await db.rollback()
-        duplicate = await db.scalar(
-            select(StudentScheduleSlot).where(
-                StudentScheduleSlot.student_id == student_id,
-                StudentScheduleSlot.day_of_week == payload.day_of_week,
-                StudentScheduleSlot.start_time == payload.start_time,
-                StudentScheduleSlot.valid_from == payload.valid_from,
-            )
-        )
-        if duplicate:
-            raise HTTPException(
-                409,
-                "An identical schedule slot already exists",
-            ) from exc
-        raise
-
+        raise HTTPException(409, "This schedule entry already exists") from exc
     await db.refresh(slot)
     return slot
 
 
-@router.get(
-    "/students/{student_id}/schedule",
-    response_model=List[ScheduleSlotResponse],
-)
-async def list_schedule_slots(
-    student_id: UUID,
-    include_inactive: bool = False,
-    db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
-):
-    query = select(StudentScheduleSlot).where(
-        StudentScheduleSlot.student_id == student_id
-    )
+@router.get("/students/{student_id}/schedule", response_model=List[ScheduleSlotResponse])
+async def list_schedule_slots(student_id: UUID, include_inactive: bool = False, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+    query = select(StudentScheduleSlot).where(StudentScheduleSlot.student_id == student_id)
     if not include_inactive:
         query = query.where(StudentScheduleSlot.is_active.is_(True))
-
-    result = await db.execute(
-        query.order_by(
-            StudentScheduleSlot.day_of_week,
-            StudentScheduleSlot.start_time,
-        )
-    )
+    result = await db.execute(query.order_by(StudentScheduleSlot.day_of_week, StudentScheduleSlot.start_time))
     return result.scalars().all()
 
 
-@router.patch(
-    "/students/{student_id}/schedule/{slot_id}",
-    response_model=ScheduleSlotResponse,
-)
-async def update_schedule_slot(
-    student_id: UUID,
-    slot_id: UUID,
-    payload: ScheduleSlotUpdate,
-    db: AsyncSession = Depends(get_db),
-    _: User = Depends(teacher_or_admin),
-):
+@router.patch("/students/{student_id}/schedule/{slot_id}", response_model=ScheduleSlotResponse)
+async def update_schedule_slot(student_id: UUID, slot_id: UUID, payload: ScheduleSlotUpdate, db: AsyncSession = Depends(get_db), _: User = Depends(teacher_or_admin)):
     slot = await db.scalar(
         select(StudentScheduleSlot)
-        .where(
-            StudentScheduleSlot.id == slot_id,
-            StudentScheduleSlot.student_id == student_id,
-        )
+        .where(StudentScheduleSlot.id == slot_id, StudentScheduleSlot.student_id == student_id)
         .with_for_update()
     )
     if not slot:
-        raise HTTPException(404, "Schedule slot not found")
+        raise HTTPException(404, "Schedule entry not found")
 
     changes = payload.model_dump(exclude_none=True)
-    new_values = {
-        "day_of_week": changes.get("day_of_week", slot.day_of_week),
-        "start_time": changes.get("start_time", slot.start_time),
-        "valid_from": changes.get("valid_from", slot.valid_from),
-        "valid_until": changes.get("valid_until", slot.valid_until),
-    }
-
-    if new_values["valid_until"] and new_values["valid_until"] < new_values["valid_from"]:
-        raise HTTPException(
-            400,
-            "valid_until must be on or after valid_from",
-        )
+    new_day = changes.get("day_of_week", slot.day_of_week)
+    new_time = changes.get("start_time", slot.start_time)
+    new_from = changes.get("valid_from", slot.valid_from)
+    new_until = changes.get("valid_until", slot.valid_until)
+    if new_until and new_until < new_from:
+        raise HTTPException(400, "valid_until must be on or after valid_from")
 
     duplicate = await db.scalar(
         select(StudentScheduleSlot).where(
             StudentScheduleSlot.id != slot.id,
             StudentScheduleSlot.student_id == student_id,
-            StudentScheduleSlot.day_of_week == new_values["day_of_week"],
-            StudentScheduleSlot.start_time == new_values["start_time"],
-            StudentScheduleSlot.valid_from == new_values["valid_from"],
+            StudentScheduleSlot.day_of_week == new_day,
+            StudentScheduleSlot.start_time == new_time,
+            StudentScheduleSlot.valid_from == new_from,
         )
     )
     if duplicate:
-        raise HTTPException(
-            409,
-            "An identical schedule slot already exists",
-        )
+        raise HTTPException(409, "This schedule entry already exists")
 
-    old_day = slot.day_of_week
-    old_time = slot.start_time
-    old_duration = slot.duration_minutes
-    old_valid_from = slot.valid_from
+    # Generated future lessons are disposable; they will be regenerated from the edited schedule.
+    future = await db.execute(
+        select(Lesson, Event)
+        .join(Event, Event.id == Lesson.event_id)
+        .where(
+            Lesson.schedule_slot_id == slot.id,
+            Lesson.status == "scheduled",
+            Lesson.original_start_time >= datetime.now().astimezone(),
+        )
+    )
+    for lesson, event in future.all():
+        await db.delete(lesson)
+        await db.delete(event)
 
     for field, value in changes.items():
         setattr(slot, field, value)
-
-    # Update future, uncompleted, non-rescheduled occurrences generated from this slot.
-    if any(
-        key in changes
-        for key in (
-            "day_of_week",
-            "start_time",
-            "duration_minutes",
-            "valid_from",
-            "valid_until",
-        )
-    ):
-        future_lessons = await db.execute(
-            select(Lesson, Event)
-            .join(Event, Event.id == Lesson.event_id)
-            .where(
-                Lesson.schedule_slot_id == slot.id,
-                Lesson.status == "scheduled",
-                Lesson.original_start_time.is_not(None),
-                Lesson.original_start_time >= datetime.now(slot.original_tz if hasattr(slot, "original_tz") else __import__("zoneinfo").ZoneInfo("Asia/Almaty")),
-            )
-            .with_for_update(of=(Lesson, Event))
-        )
-
-        from zoneinfo import ZoneInfo
-        local_tz = ZoneInfo("Asia/Almaty")
-
-        for lesson, event in future_lessons.all():
-            original = lesson.original_start_time.astimezone(local_tz)
-            occurrence_date = original.date()
-
-            if occurrence_date < slot.valid_from:
-                continue
-            if slot.valid_until and occurrence_date > slot.valid_until:
-                continue
-
-            new_start = datetime.combine(
-                occurrence_date,
-                slot.start_time,
-            ).replace(tzinfo=local_tz)
-
-            # If the weekday changed, move the occurrence to the corresponding weekday in the same week.
-            if slot.day_of_week != old_day:
-                monday = occurrence_date - timedelta(days=occurrence_date.weekday())
-                new_date = monday + timedelta(days=slot.day_of_week)
-                new_start = datetime.combine(new_date, slot.start_time).replace(tzinfo=local_tz)
-
-            duration = slot.duration_minutes
-            event.start_time = new_start
-            event.end_time = new_start + timedelta(minutes=duration)
-            lesson.original_start_time = new_start
 
     try:
         await db.commit()
     except IntegrityError as exc:
         await db.rollback()
-        raise HTTPException(
-            409,
-            "The updated schedule conflicts with an existing slot",
-        ) from exc
+        raise HTTPException(409, "This schedule entry already exists") from exc
 
     await db.refresh(slot)
     return slot
 
 
-@router.delete(
-    "/students/{student_id}/schedule/{slot_id}",
-    status_code=204,
-)
-async def deactivate_schedule_slot(
-    student_id: UUID,
-    slot_id: UUID,
-    db: AsyncSession = Depends(get_db),
-    _: User = Depends(teacher_or_admin),
-):
+@router.delete("/students/{student_id}/schedule/{slot_id}", status_code=204)
+async def deactivate_schedule_slot(student_id: UUID, slot_id: UUID, db: AsyncSession = Depends(get_db), _: User = Depends(teacher_or_admin)):
     slot = await db.scalar(
         select(StudentScheduleSlot)
-        .where(
-            StudentScheduleSlot.id == slot_id,
-            StudentScheduleSlot.student_id == student_id,
-        )
+        .where(StudentScheduleSlot.id == slot_id, StudentScheduleSlot.student_id == student_id)
         .with_for_update()
     )
     if not slot:
-        raise HTTPException(404, "Schedule slot not found")
+        raise HTTPException(404, "Schedule entry not found")
+
+    future = await db.execute(
+        select(Lesson, Event)
+        .join(Event, Event.id == Lesson.event_id)
+        .where(
+            Lesson.schedule_slot_id == slot.id,
+            Lesson.status == "scheduled",
+            Lesson.original_start_time >= datetime.now().astimezone(),
+        )
+    )
+    for lesson, event in future.all():
+        await db.delete(lesson)
+        await db.delete(event)
 
     slot.is_active = False
-    slot.valid_until = min(
-        slot.valid_until,
-        date.today(),
-    ) if slot.valid_until else date.today()
+    slot.valid_until = date.today()
     await db.commit()
 
 
-@router.get(
-    "/students/{student_id}/balance",
-    response_model=BalanceResponse,
-)
-async def student_balance(
-    student_id: UUID,
-    db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
-):
-    student = await db.scalar(
-        select(Student).where(Student.id == student_id)
-    )
+@router.get("/students/{student_id}/balance", response_model=BalanceResponse)
+async def student_balance(student_id: UUID, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+    student = await db.scalar(select(Student).where(Student.id == student_id))
     if not student:
         raise HTTPException(404, "Student not found")
 
     now = date.today()
     month_start = date(now.year, now.month, 1)
-    month_end = date(
-        now.year,
-        now.month,
-        monthrange(now.year, now.month)[1],
-    )
+    month_end = date(now.year, now.month, monthrange(now.year, now.month)[1])
+    month_lessons, month_due = await _month_stats(db, student, now.year, now.month)
 
-    month_lessons, month_due = await _month_stats(
-        db,
-        student,
-        now.year,
-        now.month,
-    )
-
-    payments = await db.execute(
+    payments_result = await db.execute(
         select(Payment.amount).where(
             Payment.student_id == student_id,
-            Payment.recorded_at >= datetime.combine(
-                month_start,
-                datetime.min.time(),
-            ),
-            Payment.recorded_at < datetime.combine(
-                month_end + timedelta(days=1),
-                datetime.min.time(),
-            ),
+            Payment.recorded_at >= datetime.combine(month_start, time.min).astimezone(),
+            Payment.recorded_at < datetime.combine(month_end + timedelta(days=1), time.min).astimezone(),
         )
     )
-
-    payments_total = sum(
-        (Decimal(value) for value in payments.scalars().all()),
-        Decimal("0"),
-    )
+    payments_total = sum((Decimal(v) for v in payments_result.scalars().all()), Decimal("0"))
 
     return BalanceResponse(
         student_id=student.id,
         balance=student.balance,
-        remaining_lessons=int(
-            max(Decimal("0"), Decimal(student.balance))
-            // Decimal(student.lesson_price)
-        ),
+        remaining_lessons=int(max(Decimal("0"), Decimal(student.balance)) // Decimal(student.lesson_price)),
         current_month_lessons=month_lessons,
         current_month_due=month_due,
         payments_this_month=payments_total,
-        monthly_debt=max(
-            Decimal("0"),
-            month_due - payments_total,
-        ),
+        monthly_debt=max(Decimal("0"), month_due - payments_total),
     )
