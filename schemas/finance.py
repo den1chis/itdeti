@@ -62,6 +62,8 @@ class FinanceSummary(BaseModel):
     scheduled_lessons_this_month: int
     scheduled_income_this_month: Decimal
     forecast_income_remaining: Decimal
+    active_students: int
+    monthly_forecast_income: Decimal
 
 
 class TransactionItem(BaseModel):
