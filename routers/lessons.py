@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 
 from core.database import get_db
 from core.dependencies import get_current_user, teacher_or_admin
+from core.lesson_service import complete_overdue_lessons
 from models.lesson import Lesson
 from models.schedule import Event, StudentScheduleSlot
 from models.student import Student
@@ -160,6 +161,7 @@ async def create_lesson(payload: LessonCreate, db: AsyncSession = Depends(get_db
 
 @router.get("/lessons", response_model=List[LessonResponse])
 async def list_lessons(student_id: Optional[uuid.UUID] = None, from_date: Optional[date] = None, to_date: Optional[date] = None, status: Optional[str] = None, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+    await complete_overdue_lessons(db)
     if from_date and to_date and to_date < from_date:
         raise HTTPException(400, "to_date must be on or after from_date")
     if from_date:
@@ -204,10 +206,7 @@ async def update_lesson(lesson_id: uuid.UUID, payload: LessonUpdate, db: AsyncSe
     for field in ("lesson_kind", "lesson_type", "topic", "is_attended", "teacher_notes", "status", "price"):
         value = getattr(payload, field)
         if value is not None:
-            if field == "price" and lesson.lesson_type != "trial":
-                lesson.price = value
-            else:
-                setattr(lesson, field, value)
+            setattr(lesson, field, value)
 
     if lesson.lesson_type == "trial":
         lesson.price = Decimal("0.00")
@@ -243,6 +242,7 @@ async def delete_lesson(lesson_id: uuid.UUID, db: AsyncSession = Depends(get_db)
 
 
 async def _schedule_items(db: AsyncSession, start: date, end: date) -> list[ScheduleItem]:
+    await complete_overdue_lessons(db)
     await _ensure_schedule_lessons(db, start, end)
     await db.commit()
     lower = datetime.combine(start, time.min, tzinfo=LOCAL_TZ)
