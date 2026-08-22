@@ -312,3 +312,15 @@ async def today_schedule(db: AsyncSession = Depends(get_db), _: User = Depends(g
 async def week_schedule(week_start: Optional[date] = None, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
     start = week_start or (datetime.now(LOCAL_TZ).date() - timedelta(days=datetime.now(LOCAL_TZ).weekday()))
     return await _schedule_items(db, start, start + timedelta(days=6))
+
+
+@router.get("/schedule/month", response_model=List[ScheduleItem])
+async def month_schedule(month_start: Optional[date] = None, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+    base = month_start or datetime.now(LOCAL_TZ).date().replace(day=1)
+    start = base.replace(day=1)
+    if start.month == 12:
+        next_month = date(start.year + 1, 1, 1)
+    else:
+        next_month = date(start.year, start.month + 1, 1)
+    end = next_month - timedelta(days=1)
+    return await _schedule_items(db, start, end)
