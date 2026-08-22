@@ -8,13 +8,13 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class ParentCreate(BaseModel):
     full_name: str = Field(min_length=1)
-    phone: str = Field(min_length=1)
+    phone: Optional[str] = None
     whatsapp_phone: Optional[str] = None
     email: Optional[str] = None
 
 
 class ParentUpdate(BaseModel):
-    full_name: Optional[str] = None
+    full_name: Optional[str] = Field(default=None, min_length=1)
     phone: Optional[str] = None
     whatsapp_phone: Optional[str] = None
     email: Optional[str] = None
@@ -25,7 +25,7 @@ class ParentResponse(BaseModel):
 
     id: uuid.UUID
     full_name: str
-    phone: str
+    phone: Optional[str]
     whatsapp_phone: Optional[str]
     email: Optional[str]
     created_at: datetime
@@ -34,7 +34,7 @@ class ParentResponse(BaseModel):
 class StudentCreate(BaseModel):
     full_name: str = Field(min_length=1)
     birth_date: Optional[date] = None
-    level: str = "beginner"
+    course: Optional[str] = None
     notes: Optional[str] = None
     balance: Decimal = Field(default=Decimal("0.00"), ge=0)
     lesson_price: Decimal = Field(gt=0)
@@ -44,8 +44,9 @@ class StudentCreate(BaseModel):
 class StudentUpdate(BaseModel):
     full_name: Optional[str] = Field(default=None, min_length=1)
     birth_date: Optional[date] = None
-    level: Optional[str] = None
+    course: Optional[str] = None
     notes: Optional[str] = None
+    balance: Optional[Decimal] = None
     lesson_price: Optional[Decimal] = Field(default=None, gt=0)
     is_active: Optional[bool] = None
 
@@ -57,7 +58,7 @@ class StudentResponse(BaseModel):
     user_id: Optional[uuid.UUID]
     full_name: str
     birth_date: Optional[date]
-    level: Optional[str]
+    course: Optional[str]
     notes: Optional[str]
     balance: Decimal
     lesson_price: Decimal
