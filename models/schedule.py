@@ -11,11 +11,7 @@ class Event(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     title = Column(String, nullable=False)
-    event_type = Column(
-        SAEnum("personal", "meeting", "reminder", name="event_type"),
-        nullable=False,
-        default="personal",
-    )
+    event_type = Column(SAEnum("personal", "meeting", "reminder", name="event_type"), nullable=False, default="personal")
     start_time = Column(DateTime(timezone=True), nullable=False, index=True)
     end_time = Column(DateTime(timezone=True), nullable=False)
     location = Column(String, nullable=True)
@@ -28,23 +24,12 @@ class Event(Base):
 class StudentScheduleSlot(Base):
     __tablename__ = "student_schedule"
     __table_args__ = (
-        Index(
-            "uq_student_schedule_slot_identity",
-            "student_id",
-            "day_of_week",
-            "start_time",
-            "valid_from",
-            unique=True,
-        ),
+        Index("uq_student_schedule_slot_identity", "student_id", "day_of_week", "start_time", "valid_from", unique=True),
     )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    student_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("students.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
+    student_id = Column(UUID(as_uuid=True), ForeignKey("students.id", ondelete="CASCADE"), nullable=False, index=True)
+    lesson_kind = Column(SAEnum("lesson", "masterclass", name="schedule_lesson_kind"), nullable=False, default="lesson")
     day_of_week = Column(Integer, nullable=False)
     start_time = Column(Time, nullable=False)
     duration_minutes = Column(Integer, nullable=False, default=60)
