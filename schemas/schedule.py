@@ -1,12 +1,13 @@
 from datetime import date, datetime, time
 from decimal import Decimal
-from typing import List, Optional
+from typing import Optional
 import uuid
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ScheduleSlotCreate(BaseModel):
+    lesson_kind: str = Field(default="lesson", pattern="^(lesson|masterclass)$")
     day_of_week: int = Field(ge=0, le=6)
     start_time: time
     duration_minutes: int = Field(default=60, ge=15, le=480)
@@ -21,6 +22,7 @@ class ScheduleSlotCreate(BaseModel):
 
 
 class ScheduleSlotUpdate(BaseModel):
+    lesson_kind: Optional[str] = Field(default=None, pattern="^(lesson|masterclass)$")
     day_of_week: Optional[int] = Field(default=None, ge=0, le=6)
     start_time: Optional[time] = None
     duration_minutes: Optional[int] = Field(default=None, ge=15, le=480)
@@ -34,6 +36,7 @@ class ScheduleSlotResponse(BaseModel):
 
     id: uuid.UUID
     student_id: uuid.UUID
+    lesson_kind: str
     day_of_week: int
     start_time: time
     duration_minutes: int
