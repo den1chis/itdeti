@@ -16,7 +16,7 @@ import models.schedule
 import models.student
 import models.user
 
-from routers import auth, events, finance, lessons, notifications, student, upcoming
+from routers import auth, events, finance, lessons, notifications, students, upcoming
 
 
 @asynccontextmanager
