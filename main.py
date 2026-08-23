@@ -16,7 +16,7 @@ import models.schedule
 import models.student
 import models.user
 
-from routers import auth, events, finance, lessons, notifications, students
+from routers import auth, events, finance, lessons, notifications, student, upcoming
 
 
 @asynccontextmanager
@@ -48,7 +48,7 @@ app.include_router(lessons.router)
 app.include_router(finance.router)
 app.include_router(events.router)
 app.include_router(notifications.router)
-
+app.include_router(upcoming.router)
 
 @app.get("/health")
 async def health():
