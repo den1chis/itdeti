@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import List, Optional
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,11 +32,11 @@ async def upcoming_schedule(
     db: AsyncSession = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
-    tz = timezone.utc
-    now = datetime.now(tz)
+    now = datetime.now().astimezone()
     until = now + timedelta(days=days)
 
-    # Занятия
+    # Занятия. Lesson связан с отдельным Event, поэтому сначала получаем
+    # только события, которые действительно являются занятиями.
     lessons_q = (
         select(Lesson, Event, Student)
         .join(Event, Event.id == Lesson.event_id)
@@ -44,48 +44,57 @@ async def upcoming_schedule(
         .where(
             Event.start_time >= now,
             Event.start_time < until,
-            Event.is_cancelled == False,
+            Event.is_cancelled.is_(False),
             Lesson.status != "cancelled",
         )
         .order_by(Event.start_time)
     )
     lessons_result = await db.execute(lessons_q)
 
-    items = []
-    for lesson, event, student in lessons_result.all():
-        items.append(UpcomingItem(
-            item_id=lesson.id,
-            item_type="lesson",
-            student_id=student.id,
-            student_name=student.full_name,
-            title=event.title,
-            start_time=event.start_time,
-            end_time=event.end_time,
-            lesson_kind=lesson.lesson_type,
-        ))
+    items: List[UpcomingItem] = []
+    lesson_event_ids = set()
 
-    # Личные события
+    for lesson, event, student in lessons_result.all():
+        lesson_event_ids.add(event.id)
+        items.append(
+            UpcomingItem(
+                item_id=lesson.id,
+                item_type="lesson",
+                student_id=student.id,
+                student_name=student.full_name,
+                title=event.title,
+                start_time=event.start_time,
+                end_time=event.end_time,
+                lesson_kind=lesson.lesson_kind,
+            )
+        )
+
+    # Личные события, встречи и напоминания.
+    # Не сравниваем Event.event_type с несуществующим значением "lesson":
+    # PostgreSQL enum event_type содержит только personal/meeting/reminder.
+    # Вместо этого исключаем события, уже связанные с Lesson.
     events_q = (
         select(Event)
         .where(
-            Event.event_type != "lesson",
             Event.start_time >= now,
             Event.start_time < until,
-            Event.is_cancelled == False,
+            Event.is_cancelled.is_(False),
+            ~Event.id.in_(select(Lesson.event_id).where(Lesson.event_id.is_not(None))),
         )
         .order_by(Event.start_time)
     )
     events_result = await db.execute(events_q)
 
     for event in events_result.scalars().all():
-        items.append(UpcomingItem(
-            item_id=event.id,
-            item_type="event",
-            title=event.title,
-            start_time=event.start_time,
-            end_time=event.end_time,
-        ))
+        items.append(
+            UpcomingItem(
+                item_id=event.id,
+                item_type="event",
+                title=event.title,
+                start_time=event.start_time,
+                end_time=event.end_time,
+            )
+        )
 
-    # Сортируем всё вместе по времени
     items.sort(key=lambda x: x.start_time)
     return items
