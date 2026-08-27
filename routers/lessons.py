@@ -20,6 +20,7 @@ from schemas.schedule import LessonCreate, LessonResponse, LessonUpdate, Schedul
 
 router = APIRouter(tags=["lessons", "schedule"])
 LOCAL_TZ = ZoneInfo("Asia/Almaty")
+DEFAULT_LESSON_COLOR = "#4f46e5"
 
 
 def _occurrence_datetime(day: date, slot: StudentScheduleSlot) -> datetime:
@@ -64,6 +65,7 @@ async def _ensure_schedule_lessons(db: AsyncSession, start: date, end: date) -> 
                             event_type="personal",
                             start_time=start_at,
                             end_time=end_at,
+                            color=slot.color or DEFAULT_LESSON_COLOR,
                         )
                         db.add(event)
                         await db.flush()
@@ -74,6 +76,7 @@ async def _ensure_schedule_lessons(db: AsyncSession, start: date, end: date) -> 
                             lesson_type="regular",
                             status="scheduled",
                             price=student.lesson_price,
+                            color=slot.color or DEFAULT_LESSON_COLOR,
                             schedule_slot_id=slot.id,
                             original_start_time=start_at,
                         )
@@ -97,6 +100,7 @@ def _lesson_to_response(lesson: Lesson, event: Event) -> LessonResponse:
         is_attended=lesson.is_attended,
         teacher_notes=lesson.teacher_notes,
         price=lesson.price,
+        color=lesson.color or event.color or DEFAULT_LESSON_COLOR,
         balance_deducted=lesson.balance_deducted,
         schedule_slot_id=lesson.schedule_slot_id,
         original_start_time=lesson.original_start_time,
@@ -128,7 +132,8 @@ async def create_lesson(payload: LessonCreate, db: AsyncSession = Depends(get_db
 
     end = start + timedelta(minutes=payload.duration_minutes)
     student_title = "Мастер-класс" if payload.lesson_kind == "masterclass" else "Урок"
-    event = Event(title=f"{student.full_name} — {student_title}", event_type="personal", start_time=start, end_time=end, notes=payload.teacher_notes)
+    color = payload.color or DEFAULT_LESSON_COLOR
+    event = Event(title=f"{student.full_name} — {student_title}", event_type="personal", start_time=start, end_time=end, notes=payload.teacher_notes, color=color)
     db.add(event)
     await db.flush()
 
@@ -141,6 +146,7 @@ async def create_lesson(payload: LessonCreate, db: AsyncSession = Depends(get_db
         topic=payload.topic,
         teacher_notes=payload.teacher_notes,
         price=price,
+        color=color,
         schedule_slot_id=payload.schedule_slot_id,
         original_start_time=start if payload.schedule_slot_id else None,
     )
@@ -203,10 +209,12 @@ async def update_lesson(lesson_id: uuid.UUID, payload: LessonUpdate, db: AsyncSe
     elif payload.duration_minutes is not None:
         event.end_time = event.start_time + timedelta(minutes=payload.duration_minutes)
 
-    for field in ("lesson_kind", "lesson_type", "topic", "is_attended", "teacher_notes", "status", "price"):
+    for field in ("lesson_kind", "lesson_type", "topic", "is_attended", "teacher_notes", "status", "price", "color"):
         value = getattr(payload, field)
         if value is not None:
             setattr(lesson, field, value)
+            if field == "color":
+                event.color = value
 
     if lesson.lesson_type == "trial":
         lesson.price = Decimal("0.00")
@@ -271,6 +279,7 @@ async def _schedule_items(db: AsyncSession, start: date, end: date) -> list[Sche
             lesson_status=lesson.status,
             lesson_price=lesson.price,
             topic=lesson.topic,
+            color=lesson.color or event.color or DEFAULT_LESSON_COLOR,
             is_cancelled=lesson.status == "cancelled" or event.is_cancelled,
         )
         for lesson, event, student in lesson_rows.all()
@@ -295,6 +304,7 @@ async def _schedule_items(db: AsyncSession, start: date, end: date) -> list[Sche
             start_time=event.start_time,
             end_time=event.end_time,
             location=event.location,
+            color=event.color or "#64748b",
             is_cancelled=False,
         )
         for event in events.scalars().all()
