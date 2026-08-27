@@ -19,6 +19,7 @@ class Lesson(Base):
     is_attended = Column(Boolean, nullable=True)
     teacher_notes = Column(Text, nullable=True)
     price = Column(Numeric(10, 2), nullable=False, default=0)
+    color = Column(String(20), nullable=False, default="#4f46e5", server_default="#4f46e5")
     balance_deducted = Column(Boolean, nullable=False, default=False)
     schedule_slot_id = Column(UUID(as_uuid=True), ForeignKey("student_schedule.id", ondelete="SET NULL"), nullable=True, index=True)
     original_start_time = Column(DateTime(timezone=True), nullable=True)
