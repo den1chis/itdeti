@@ -11,6 +11,7 @@ class ScheduleSlotCreate(BaseModel):
     day_of_week: int = Field(ge=0, le=6)
     start_time: time
     duration_minutes: int = Field(default=60, ge=15, le=480)
+    color: str = Field(default="#4f46e5", pattern=r"^#[0-9A-Fa-f]{6}$")
     valid_from: date = Field(default_factory=date.today)
     valid_until: Optional[date] = None
 
@@ -26,6 +27,7 @@ class ScheduleSlotUpdate(BaseModel):
     day_of_week: Optional[int] = Field(default=None, ge=0, le=6)
     start_time: Optional[time] = None
     duration_minutes: Optional[int] = Field(default=None, ge=15, le=480)
+    color: Optional[str] = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
     is_active: Optional[bool] = None
     valid_from: Optional[date] = None
     valid_until: Optional[date] = None
@@ -40,6 +42,7 @@ class ScheduleSlotResponse(BaseModel):
     day_of_week: int
     start_time: time
     duration_minutes: int
+    color: str
     is_active: bool
     valid_from: date
     valid_until: Optional[date]
@@ -54,6 +57,7 @@ class LessonCreate(BaseModel):
     topic: Optional[str] = None
     teacher_notes: Optional[str] = None
     price: Optional[Decimal] = Field(default=None, ge=0)
+    color: str = Field(default="#4f46e5", pattern=r"^#[0-9A-Fa-f]{6}$")
     schedule_slot_id: Optional[uuid.UUID] = None
 
 
@@ -67,6 +71,7 @@ class LessonUpdate(BaseModel):
     start_time: Optional[datetime] = None
     duration_minutes: Optional[int] = Field(default=None, ge=15, le=480)
     price: Optional[Decimal] = Field(default=None, ge=0)
+    color: Optional[str] = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
 
 
 class LessonResponse(BaseModel):
@@ -80,6 +85,7 @@ class LessonResponse(BaseModel):
     is_attended: Optional[bool]
     teacher_notes: Optional[str]
     price: Decimal
+    color: str
     balance_deducted: bool
     schedule_slot_id: Optional[uuid.UUID]
     original_start_time: Optional[datetime]
@@ -104,6 +110,7 @@ class ScheduleItem(BaseModel):
     lesson_price: Optional[Decimal] = None
     topic: Optional[str] = None
     location: Optional[str] = None
+    color: str = "#4f46e5"
     is_cancelled: bool = False
 
 
@@ -114,6 +121,7 @@ class EventCreate(BaseModel):
     end_time: datetime
     location: Optional[str] = None
     notes: Optional[str] = None
+    color: str = Field(default="#64748b", pattern=r"^#[0-9A-Fa-f]{6}$")
 
     @model_validator(mode="after")
     def validate_time(self):
@@ -129,6 +137,7 @@ class EventUpdate(BaseModel):
     end_time: Optional[datetime] = None
     location: Optional[str] = None
     notes: Optional[str] = None
+    color: Optional[str] = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
     is_cancelled: Optional[bool] = None
 
 
@@ -142,6 +151,7 @@ class EventResponse(BaseModel):
     end_time: datetime
     location: Optional[str]
     notes: Optional[str]
+    color: str
     is_cancelled: bool
     created_at: datetime
     updated_at: datetime
