@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 
 from core.database import get_db
-from core.dependencies import admin_only, get_current_user, teacher_or_admin
+from core.dependencies import get_current_user, teacher_or_admin
 from models.lesson import Lesson
 from models.parent import Parent, StudentParent
 from models.payment import Payment
@@ -161,16 +161,36 @@ async def update_student(student_id: UUID, payload: StudentUpdate, db: AsyncSess
 
 
 @router.delete("/students/{student_id}", status_code=204)
-async def deactivate_student(student_id: UUID, db: AsyncSession = Depends(get_db), _: User = Depends(admin_only)):
+async def deactivate_student(student_id: UUID, db: AsyncSession = Depends(get_db), _: User = Depends(teacher_or_admin)):
+    """Deactivate a student and atomically remove their active schedule/future generated lessons.
+
+    Historical completed lessons and financial records are intentionally preserved.
+    """
     student = await db.scalar(select(Student).where(Student.id == student_id).with_for_update())
     if not student:
         raise HTTPException(404, "Student not found")
-    student.is_active = False
+
+    # Remove future scheduled occurrences generated from this student's recurring schedule.
+    # Completed/past lessons remain as history and keep their financial/audit information.
+    future_rows = await db.execute(
+        select(Lesson, Event)
+        .join(Event, Event.id == Lesson.event_id)
+        .where(
+            Lesson.student_id == student_id,
+            Lesson.status.in_(["scheduled", "rescheduled"]),
+            Event.start_time >= datetime.now().astimezone(),
+        )
+    )
+    for lesson, event in future_rows.all():
+        await db.delete(lesson)
+        await db.delete(event)
+
     await db.execute(
         StudentScheduleSlot.__table__.update()
         .where(StudentScheduleSlot.student_id == student_id)
         .values(is_active=False, valid_until=date.today())
     )
+    student.is_active = False
     await db.commit()
 
 
@@ -197,6 +217,8 @@ async def unlink_parent(student_id: UUID, parent_id: UUID, db: AsyncSession = De
 async def create_schedule_slot(student_id: UUID, payload: ScheduleSlotCreate, db: AsyncSession = Depends(get_db), _: User = Depends(teacher_or_admin)):
     if not await db.scalar(select(Student.id).where(Student.id == student_id, Student.is_active.is_(True))):
         raise HTTPException(404, "Active student not found")
+
+    # Reuse an inactive slot with the same identity instead of creating a conflicting row.
     duplicate = await db.scalar(
         select(StudentScheduleSlot).where(
             StudentScheduleSlot.student_id == student_id,
@@ -206,7 +228,16 @@ async def create_schedule_slot(student_id: UUID, payload: ScheduleSlotCreate, db
         )
     )
     if duplicate:
+        if not duplicate.is_active:
+            for field, value in payload.model_dump().items():
+                setattr(duplicate, field, value)
+            duplicate.is_active = True
+            duplicate.valid_until = None
+            await db.commit()
+            await db.refresh(duplicate)
+            return duplicate
         raise HTTPException(409, "This schedule entry already exists")
+
     slot = StudentScheduleSlot(student_id=student_id, **payload.model_dump())
     db.add(slot)
     try:
