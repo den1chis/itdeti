@@ -116,7 +116,7 @@ class ScheduleItem(BaseModel):
 
 class EventCreate(BaseModel):
     title: str = Field(min_length=1)
-    event_type: str = Field(default="personal", pattern="^(personal|meeting|reminder)$")
+    event_type: str = Field(default="personal", pattern="^(personal|meeting|reminder|masterclass)$")
     start_time: datetime
     end_time: datetime
     location: Optional[str] = None
@@ -132,7 +132,7 @@ class EventCreate(BaseModel):
 
 class EventUpdate(BaseModel):
     title: Optional[str] = Field(default=None, min_length=1)
-    event_type: Optional[str] = Field(default=None, pattern="^(personal|meeting|reminder)$")
+    event_type: Optional[str] = Field(default=None, pattern="^(personal|meeting|reminder|masterclass)$")
     start_time: Optional[datetime] = None
     end_time: Optional[datetime] = None
     location: Optional[str] = None
