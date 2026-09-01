@@ -11,7 +11,11 @@ class Event(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     title = Column(String, nullable=False)
-    event_type = Column(SAEnum("personal", "meeting", "reminder", name="event_type"), nullable=False, default="personal")
+    event_type = Column(
+        SAEnum("personal", "meeting", "reminder", "masterclass", name="event_type"),
+        nullable=False,
+        default="personal",
+    )
     start_time = Column(DateTime(timezone=True), nullable=False, index=True)
     end_time = Column(DateTime(timezone=True), nullable=False)
     location = Column(String, nullable=True)
