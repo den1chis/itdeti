@@ -1,4 +1,4 @@
-from sqlalchemy import CheckConstraint, Column, Date, DateTime, Enum as SAEnum, Numeric, String
+from sqlalchemy import Boolean, CheckConstraint, Column, Date, DateTime, Enum as SAEnum, ForeignKey, Numeric, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 import uuid
@@ -11,8 +11,15 @@ class Expense(Base):
     __table_args__ = (CheckConstraint("amount > 0", name="ck_expenses_amount_positive"),)
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    recurring_expense_id = Column(UUID(as_uuid=True), ForeignKey("recurring_expenses.id", ondelete="SET NULL"), nullable=True, index=True)
+    recurring_period = Column(Date, nullable=True, index=True)
     category = Column(
-        SAEnum("car", "food", "utilities", "salary", "equipment", "other", name="expense_category"),
+        SAEnum(
+            "rent", "tax", "utilities", "advertising", "equipment",
+            "materials", "bank_fee", "transport", "salary", "other",
+            name="expense_category",
+            create_type=False,
+        ),
         nullable=False,
     )
     amount = Column(Numeric(10, 2), nullable=False)
@@ -24,3 +31,6 @@ class Expense(Base):
     )
     expense_date = Column(Date, nullable=False, server_default=func.current_date(), index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    is_cancelled = Column(Boolean, nullable=False, default=False, server_default="false", index=True)
+    cancelled_at = Column(DateTime(timezone=True), nullable=True)
+    cancel_reason = Column(String, nullable=True)
