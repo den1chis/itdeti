@@ -145,7 +145,6 @@ async def _ensure_recurring_expenses(db: AsyncSession, today: Optional[date] = N
             await db.commit()
         except IntegrityError:
             await db.rollback()
-            # A concurrent finance load may have created the same monthly rows.
     return created
 
 
@@ -306,11 +305,6 @@ async def update_expense(expense_id: UUID, payload: ExpenseUpdate, db: AsyncSess
 
     for key, value in payload.model_dump().items():
         setattr(expense, key, value)
-
-    # Editing a recurring instance makes it a manual correction for that month.
-    if expense.recurring_expense_id:
-        expense.recurring_expense_id = None
-        expense.recurring_period = None
 
     await db.commit()
     await db.refresh(expense)
