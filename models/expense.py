@@ -6,6 +6,12 @@ import uuid
 from core.database import Base
 
 
+EXPENSE_CATEGORIES = (
+    "car", "food", "utilities", "salary", "equipment", "other",
+    "rent", "tax", "advertising", "materials", "bank_fee", "transport",
+)
+
+
 class Expense(Base):
     __tablename__ = "expenses"
     __table_args__ = (CheckConstraint("amount > 0", name="ck_expenses_amount_positive"),)
@@ -13,15 +19,7 @@ class Expense(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     recurring_expense_id = Column(UUID(as_uuid=True), ForeignKey("recurring_expenses.id", ondelete="SET NULL"), nullable=True, index=True)
     recurring_period = Column(Date, nullable=True, index=True)
-    category = Column(
-        SAEnum(
-            "rent", "tax", "utilities", "advertising", "equipment",
-            "materials", "bank_fee", "transport", "salary", "other",
-            name="expense_category",
-            create_type=False,
-        ),
-        nullable=False,
-    )
+    category = Column(SAEnum(*EXPENSE_CATEGORIES, name="expense_category", create_type=False), nullable=False)
     amount = Column(Numeric(10, 2), nullable=False)
     description = Column(String, nullable=True)
     payment_method = Column(
