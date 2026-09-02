@@ -1,4 +1,4 @@
-from sqlalchemy import CheckConstraint, Column, DateTime, Enum as SAEnum, ForeignKey, Numeric, String
+from sqlalchemy import Boolean, CheckConstraint, Column, DateTime, Enum as SAEnum, ForeignKey, Numeric, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 import uuid
@@ -19,3 +19,6 @@ class Payment(Base):
     request_id = Column(String(64), nullable=True, unique=True, index=True)
     comment = Column(String, nullable=True)
     recorded_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+    is_cancelled = Column(Boolean, nullable=False, default=False, server_default="false", index=True)
+    cancelled_at = Column(DateTime(timezone=True), nullable=True)
+    cancel_reason = Column(String, nullable=True)
