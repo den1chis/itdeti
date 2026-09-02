@@ -13,8 +13,8 @@ class RecurringExpense(Base):
     name = Column(String, nullable=False)
     category = Column(
         SAEnum(
-            "rent", "tax", "utilities", "advertising", "equipment",
-            "materials", "bank_fee", "transport", "salary", "other",
+            "car", "food", "utilities", "salary", "equipment", "other",
+            "rent", "tax", "advertising", "materials", "bank_fee", "transport",
             name="expense_category",
             create_type=False,
         ),
