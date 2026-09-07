@@ -12,12 +12,13 @@ import models.notification
 import models.parent
 import models.payment
 import models.refresh_token
+import models.recurring_event
 import models.recurring_expense
 import models.schedule
 import models.student
 import models.user
 
-from routers import auth, events, finance, lessons, notifications, students, upcoming
+from routers import auth, events, finance, lessons, notifications, recurring_events, students, upcoming
 
 
 @asynccontextmanager
@@ -48,6 +49,7 @@ app.include_router(students.router)
 app.include_router(lessons.router)
 app.include_router(finance.router)
 app.include_router(events.router)
+app.include_router(recurring_events.router)
 app.include_router(notifications.router)
 app.include_router(upcoming.router)
 
