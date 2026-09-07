@@ -1,4 +1,4 @@
--- ITdeti: recurring calendar events + safe manual historical lessons
+-- ITdeti: recurring calendar events + safe historical lesson deduplication
 -- Additive migration. Existing rows are preserved.
 
 CREATE TABLE IF NOT EXISTS recurring_events (
@@ -27,14 +27,36 @@ ALTER TABLE events
 CREATE INDEX IF NOT EXISTS ix_events_recurring_event_id
     ON events(recurring_event_id);
 
--- A manually entered historical lesson has no schedule slot but does have
--- original_start_time. Prevent accidental duplicate manual lessons for the
--- same student/date/time without affecting existing recurring lessons.
-CREATE UNIQUE INDEX IF NOT EXISTS uq_manual_lesson_student_time
-    ON lessons(student_id, original_start_time)
-    WHERE schedule_slot_id IS NULL AND original_start_time IS NOT NULL;
+-- Do not add a unique index: an existing database may already contain
+-- historical duplicates. Instead, prevent NEW duplicate lessons only.
+-- This covers both a manual historical lesson and a lesson later generated
+-- from a schedule at the same student/date/time.
+CREATE OR REPLACE FUNCTION prevent_duplicate_lesson_occurrence()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF NEW.original_start_time IS NOT NULL THEN
+        IF EXISTS (
+            SELECT 1
+            FROM lessons l
+            WHERE l.student_id = NEW.student_id
+              AND l.original_start_time = NEW.original_start_time
+              AND l.id <> COALESCE(NEW.id, gen_random_uuid())
+        ) THEN
+            RAISE EXCEPTION 'duplicate lesson occurrence for student and start time';
+        END IF;
+    END IF;
+    RETURN NEW;
+END;
+$$;
 
--- Keep updated_at correct for recurring event records.
+DROP TRIGGER IF EXISTS trg_prevent_duplicate_lesson_occurrence ON lessons;
+CREATE TRIGGER trg_prevent_duplicate_lesson_occurrence
+BEFORE INSERT ON lessons
+FOR EACH ROW
+EXECUTE FUNCTION prevent_duplicate_lesson_occurrence();
+
 DROP TRIGGER IF EXISTS trg_recurring_events_updated_at ON recurring_events;
 CREATE TRIGGER trg_recurring_events_updated_at
 BEFORE UPDATE ON recurring_events
