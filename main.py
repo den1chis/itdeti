@@ -18,7 +18,7 @@ import models.schedule
 import models.student
 import models.user
 
-from routers import auth, events, finance, lessons, notifications, recurring_events, students, upcoming
+from routers import auth, events, finance, lessons, manual_lessons, notifications, recurring_events, students, upcoming
 
 
 @asynccontextmanager
@@ -47,6 +47,7 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(students.router)
 app.include_router(lessons.router)
+app.include_router(manual_lessons.router)
 app.include_router(finance.router)
 app.include_router(events.router)
 app.include_router(recurring_events.router)
