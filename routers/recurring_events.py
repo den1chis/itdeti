@@ -1,10 +1,11 @@
 from datetime import date, datetime, time, timedelta
 from typing import Optional
 import uuid
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, model_validator
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
@@ -14,6 +15,7 @@ from models.recurring_event import RecurringEvent
 from models.user import User
 
 router = APIRouter(prefix="/recurring-events", tags=["recurring-events"])
+LOCAL_TZ = ZoneInfo("Asia/Almaty")
 
 
 class RecurringEventCreate(BaseModel):
@@ -53,18 +55,14 @@ class RecurringEventResponse(BaseModel):
 
 
 @router.post("", response_model=RecurringEventResponse, status_code=201)
-async def create_recurring_event(
-    payload: RecurringEventCreate,
-    db: AsyncSession = Depends(get_db),
-    _: User = Depends(teacher_or_admin),
-):
+async def create_recurring_event(payload: RecurringEventCreate, db: AsyncSession = Depends(get_db), _: User = Depends(teacher_or_admin)):
     series = RecurringEvent(**payload.model_dump())
     db.add(series)
     await db.flush()
 
     current = payload.start_date
     while current <= payload.end_date:
-        start = datetime.combine(current, payload.start_time).astimezone()
+        start = datetime.combine(current, payload.start_time).replace(tzinfo=LOCAL_TZ)
         end = start + timedelta(minutes=payload.duration_minutes)
         db.add(Event(
             title=payload.title,
@@ -74,11 +72,9 @@ async def create_recurring_event(
             location=payload.location,
             notes=payload.notes,
             color=payload.color,
+            recurring_event_id=series.id,
         ))
-        if payload.frequency == "daily":
-            current += timedelta(days=payload.interval)
-        else:
-            current += timedelta(weeks=payload.interval)
+        current += timedelta(days=payload.interval if payload.frequency == "daily" else payload.interval * 7)
 
     await db.commit()
     await db.refresh(series)
@@ -86,24 +82,23 @@ async def create_recurring_event(
 
 
 @router.get("", response_model=list[RecurringEventResponse])
-async def list_recurring_events(
-    db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
-):
+async def list_recurring_events(db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
     result = await db.execute(select(RecurringEvent).order_by(RecurringEvent.start_date.desc()))
     return result.scalars().all()
 
 
 @router.delete("/{recurring_id}", response_model=RecurringEventResponse)
-async def deactivate_recurring_event(
-    recurring_id: uuid.UUID,
-    db: AsyncSession = Depends(get_db),
-    _: User = Depends(teacher_or_admin),
-):
+async def deactivate_recurring_event(recurring_id: uuid.UUID, db: AsyncSession = Depends(get_db), _: User = Depends(teacher_or_admin)):
     series = await db.scalar(select(RecurringEvent).where(RecurringEvent.id == recurring_id).with_for_update())
     if not series:
         raise HTTPException(404, "Recurring event not found")
     series.is_active = False
+    now = datetime.now(LOCAL_TZ)
+    await db.execute(
+        update(Event)
+        .where(Event.recurring_event_id == series.id, Event.start_time >= now, Event.is_cancelled.is_(False))
+        .values(is_cancelled=True)
+    )
     await db.commit()
     await db.refresh(series)
     return series
