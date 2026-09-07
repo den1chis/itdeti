@@ -22,6 +22,7 @@ class Event(Base):
     notes = Column(Text, nullable=True)
     color = Column(String(20), nullable=False, default="#4f46e5", server_default="#4f46e5")
     is_cancelled = Column(Boolean, nullable=False, default=False)
+    recurring_event_id = Column(UUID(as_uuid=True), ForeignKey("recurring_events.id", ondelete="SET NULL"), nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
