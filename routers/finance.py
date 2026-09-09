@@ -16,6 +16,7 @@ from models.expense import Expense
 from models.notification import Notification
 from models.payment import Payment
 from models.recurring_expense import RecurringExpense
+from models.recurring_income import RecurringIncome, RecurringIncomeRecord
 from models.schedule import StudentScheduleSlot
 from models.student import Student
 from models.user import User
@@ -30,6 +31,12 @@ from schemas.finance import (
     RecurringExpenseCreate,
     RecurringExpenseResponse,
     RecurringExpenseUpdate,
+    RecurringIncomeCreate,
+    RecurringIncomeRecordCreate,
+    RecurringIncomeRecordResponse,
+    RecurringIncomeRecordUpdate,
+    RecurringIncomeResponse,
+    RecurringIncomeUpdate,
     TransactionItem,
 )
 
@@ -90,6 +97,17 @@ async def _sum_payments(db: AsyncSession, start: datetime, end: datetime) -> Dec
     return Decimal(value or 0)
 
 
+async def _sum_recurring_income(db: AsyncSession, start: date, end: date) -> Decimal:
+    value = await db.scalar(
+        select(func.coalesce(func.sum(RecurringIncomeRecord.amount), 0)).where(
+            RecurringIncomeRecord.received_date >= start,
+            RecurringIncomeRecord.received_date <= end,
+            RecurringIncomeRecord.is_cancelled.is_(False),
+        )
+    )
+    return Decimal(value or 0)
+
+
 async def _sum_expenses(db: AsyncSession, start: date, end: date) -> Decimal:
     value = await db.scalar(
         select(func.coalesce(func.sum(Expense.amount), 0)).where(
@@ -99,53 +117,6 @@ async def _sum_expenses(db: AsyncSession, start: date, end: date) -> Decimal:
         )
     )
     return Decimal(value or 0)
-
-
-async def _ensure_recurring_expenses(db: AsyncSession, today: Optional[date] = None) -> int:
-    today = today or datetime.now(LOCAL_TZ).date()
-    result = await db.execute(select(RecurringExpense).where(RecurringExpense.is_active.is_(True)))
-    templates = result.scalars().all()
-    created = 0
-
-    for template in templates:
-        created_at_local = template.created_at.astimezone(LOCAL_TZ).date() if template.created_at else today
-        cursor = _month_start(created_at_local)
-        current = _month_start(today)
-
-        while cursor <= current:
-            due_day = min(template.day_of_month, monthrange(cursor.year, cursor.month)[1])
-            due_date = date(cursor.year, cursor.month, due_day)
-            if due_date >= created_at_local and due_date <= today:
-                existing = await db.scalar(
-                    select(Expense.id).where(
-                        Expense.recurring_expense_id == template.id,
-                        Expense.recurring_period == cursor,
-                    )
-                )
-                if not existing:
-                    db.add(
-                        Expense(
-                            recurring_expense_id=template.id,
-                            recurring_period=cursor,
-                            category=template.category,
-                            amount=template.amount,
-                            description=template.description or template.name,
-                            payment_method=template.payment_method,
-                            expense_date=due_date,
-                        )
-                    )
-                    created += 1
-            if cursor.month == 12:
-                cursor = date(cursor.year + 1, 1, 1)
-            else:
-                cursor = date(cursor.year, cursor.month + 1, 1)
-
-    if created:
-        try:
-            await db.commit()
-        except IntegrityError:
-            await db.rollback()
-    return created
 
 
 @router.post("/payments", response_model=PaymentResponse, status_code=201)
@@ -277,7 +248,6 @@ async def create_expense(payload: ExpenseCreate, db: AsyncSession = Depends(get_
 
 @router.get("/expenses", response_model=List[ExpenseResponse])
 async def list_expenses(category: Optional[str] = None, month: Optional[str] = None, include_cancelled: bool = False, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
-    await _ensure_recurring_expenses(db)
     query = select(Expense).order_by(Expense.expense_date.desc(), Expense.created_at.desc())
     if category:
         query = query.where(Expense.category == category)
@@ -366,18 +336,173 @@ async def deactivate_recurring_expense(recurring_id: UUID, db: AsyncSession = De
     return item
 
 
+@router.post("/recurring-expenses/{recurring_id}/record", response_model=ExpenseResponse, status_code=201)
+async def record_recurring_expense(recurring_id: UUID, db: AsyncSession = Depends(get_db), _: User = Depends(teacher_or_admin)):
+    today = datetime.now(LOCAL_TZ).date()
+    period = _month_start(today)
+    item = await db.scalar(select(RecurringExpense).where(RecurringExpense.id == recurring_id).with_for_update())
+    if not item:
+        raise HTTPException(404, "Recurring expense not found")
+    if not item.is_active:
+        raise HTTPException(409, "Recurring expense is inactive")
+
+    existing = await db.scalar(
+        select(Expense).where(
+            Expense.recurring_expense_id == item.id,
+            Expense.recurring_period == period,
+            Expense.is_cancelled.is_(False),
+        )
+    )
+    if existing:
+        raise HTTPException(409, f"{item.name} за {today:%B %Y} уже проведён")
+
+    expense = Expense(
+        recurring_expense_id=item.id,
+        recurring_period=period,
+        category=item.category,
+        amount=item.amount,
+        description=item.description or item.name,
+        payment_method=item.payment_method,
+        expense_date=today,
+    )
+    db.add(expense)
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(409, f"{item.name} за {today:%B %Y} уже проведён") from exc
+    await db.refresh(expense)
+    return expense
+
+
 @router.post("/recurring-expenses/sync", response_model=List[ExpenseResponse])
 async def sync_recurring_expenses(db: AsyncSession = Depends(get_db), _: User = Depends(teacher_or_admin)):
-    await _ensure_recurring_expenses(db)
+    # Kept for backward compatibility with older clients. It no longer creates
+    # transactions automatically; recurring expenses are recorded explicitly.
     result = await db.execute(
         select(Expense).where(Expense.recurring_expense_id.is_not(None)).order_by(Expense.expense_date.desc(), Expense.created_at.desc())
     )
     return result.scalars().all()
 
 
+@router.get("/recurring-incomes", response_model=List[RecurringIncomeResponse])
+async def list_recurring_incomes(db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+    result = await db.execute(select(RecurringIncome).order_by(RecurringIncome.is_active.desc(), RecurringIncome.created_at.desc()))
+    return result.scalars().all()
+
+
+@router.post("/recurring-incomes", response_model=RecurringIncomeResponse, status_code=201)
+async def create_recurring_income(payload: RecurringIncomeCreate, db: AsyncSession = Depends(get_db), _: User = Depends(teacher_or_admin)):
+    item = RecurringIncome(**payload.model_dump())
+    db.add(item)
+    await db.commit()
+    await db.refresh(item)
+    return item
+
+
+@router.patch("/recurring-incomes/{recurring_id}", response_model=RecurringIncomeResponse)
+async def update_recurring_income(recurring_id: UUID, payload: RecurringIncomeUpdate, db: AsyncSession = Depends(get_db), _: User = Depends(teacher_or_admin)):
+    item = await db.scalar(select(RecurringIncome).where(RecurringIncome.id == recurring_id).with_for_update())
+    if not item:
+        raise HTTPException(404, "Recurring income not found")
+    for key, value in payload.model_dump().items():
+        setattr(item, key, value)
+    await db.commit()
+    await db.refresh(item)
+    return item
+
+
+@router.delete("/recurring-incomes/{recurring_id}", response_model=RecurringIncomeResponse)
+async def deactivate_recurring_income(recurring_id: UUID, db: AsyncSession = Depends(get_db), _: User = Depends(teacher_or_admin)):
+    item = await db.scalar(select(RecurringIncome).where(RecurringIncome.id == recurring_id).with_for_update())
+    if not item:
+        raise HTTPException(404, "Recurring income not found")
+    item.is_active = False
+    await db.commit()
+    await db.refresh(item)
+    return item
+
+
+@router.post("/recurring-incomes/{recurring_id}/record", response_model=RecurringIncomeRecordResponse, status_code=201)
+async def record_recurring_income(recurring_id: UUID, payload: RecurringIncomeRecordCreate, db: AsyncSession = Depends(get_db), _: User = Depends(teacher_or_admin)):
+    today = datetime.now(LOCAL_TZ).date()
+    period = _month_start(today)
+    item = await db.scalar(select(RecurringIncome).where(RecurringIncome.id == recurring_id).with_for_update())
+    if not item:
+        raise HTTPException(404, "Recurring income not found")
+    if not item.is_active:
+        raise HTTPException(409, "Recurring income is inactive")
+
+    existing = await db.scalar(
+        select(RecurringIncomeRecord).where(
+            RecurringIncomeRecord.recurring_income_id == item.id,
+            RecurringIncomeRecord.recurring_period == period,
+            RecurringIncomeRecord.is_cancelled.is_(False),
+        )
+    )
+    if existing:
+        raise HTTPException(409, f"{item.name} за {today:%B %Y} уже получен")
+
+    record = RecurringIncomeRecord(
+        recurring_income_id=item.id,
+        recurring_period=period,
+        amount=payload.amount or item.amount,
+        payment_method=payload.payment_method or item.payment_method,
+        received_date=payload.received_date or today,
+        comment=payload.comment or item.description,
+    )
+    db.add(record)
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(409, f"{item.name} за {today:%B %Y} уже получен") from exc
+    await db.refresh(record)
+    return record
+
+
+@router.get("/recurring-income-records", response_model=List[RecurringIncomeRecordResponse])
+async def list_recurring_income_records(include_cancelled: bool = False, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+    query = select(RecurringIncomeRecord).order_by(RecurringIncomeRecord.received_date.desc(), RecurringIncomeRecord.created_at.desc())
+    if not include_cancelled:
+        query = query.where(RecurringIncomeRecord.is_cancelled.is_(False))
+    result = await db.execute(query)
+    return result.scalars().all()
+
+
+@router.patch("/recurring-income-records/{record_id}", response_model=RecurringIncomeRecordResponse)
+async def update_recurring_income_record(record_id: UUID, payload: RecurringIncomeRecordUpdate, db: AsyncSession = Depends(get_db), _: User = Depends(teacher_or_admin)):
+    record = await db.scalar(select(RecurringIncomeRecord).where(RecurringIncomeRecord.id == record_id).with_for_update())
+    if not record:
+        raise HTTPException(404, "Recurring income record not found")
+    if record.is_cancelled:
+        raise HTTPException(409, "Cancelled recurring income cannot be edited")
+    record.amount = payload.amount
+    record.payment_method = payload.payment_method
+    record.received_date = payload.received_date
+    record.comment = payload.comment
+    await db.commit()
+    await db.refresh(record)
+    return record
+
+
+@router.delete("/recurring-income-records/{record_id}", response_model=RecurringIncomeRecordResponse)
+async def cancel_recurring_income_record(record_id: UUID, db: AsyncSession = Depends(get_db), _: User = Depends(teacher_or_admin)):
+    record = await db.scalar(select(RecurringIncomeRecord).where(RecurringIncomeRecord.id == record_id).with_for_update())
+    if not record:
+        raise HTTPException(404, "Recurring income record not found")
+    if record.is_cancelled:
+        return record
+    record.is_cancelled = True
+    record.cancelled_at = datetime.now(LOCAL_TZ)
+    record.cancel_reason = "Cancelled from finance"
+    await db.commit()
+    await db.refresh(record)
+    return record
+
+
 @router.get("/summary", response_model=FinanceSummary)
 async def finance_summary(year: Optional[int] = None, month: Optional[int] = None, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
-    await _ensure_recurring_expenses(db)
     today = datetime.now(LOCAL_TZ).date()
     year = year or today.year
     month = month or today.month
@@ -387,7 +512,9 @@ async def finance_summary(year: Optional[int] = None, month: Optional[int] = Non
     month_start = date(year, month, 1)
     month_end = date(year, month, monthrange(year, month)[1])
     next_month = month_end + timedelta(days=1)
-    income = await _sum_payments(db, _local_start(month_start), _local_start(next_month))
+    income_from_students = await _sum_payments(db, _local_start(month_start), _local_start(next_month))
+    recurring_income_total = await _sum_recurring_income(db, month_start, month_end)
+    total_income = income_from_students + recurring_income_total
     expense_total = await _sum_expenses(db, month_start, month_end)
 
     categories = await db.execute(
@@ -401,9 +528,22 @@ async def finance_summary(year: Optional[int] = None, month: Optional[int] = Non
     )
     by_category = {category: Decimal(amount or 0) for category, amount in categories.all()}
 
-    all_income = await db.scalar(select(func.coalesce(func.sum(Payment.amount), 0)).where(Payment.is_cancelled.is_(False)))
+    all_student_income = await db.scalar(select(func.coalesce(func.sum(Payment.amount), 0)).where(Payment.is_cancelled.is_(False)))
+    all_recurring_income = await db.scalar(select(func.coalesce(func.sum(RecurringIncomeRecord.amount), 0)).where(RecurringIncomeRecord.is_cancelled.is_(False)))
     all_expenses = await db.scalar(select(func.coalesce(func.sum(Expense.amount), 0)).where(Expense.is_cancelled.is_(False)))
-    current_balance = Decimal(all_income or 0) - Decimal(all_expenses or 0)
+    current_balance = Decimal(all_student_income or 0) + Decimal(all_recurring_income or 0) - Decimal(all_expenses or 0)
+
+    planned_recurring_income = await db.scalar(
+        select(func.coalesce(func.sum(RecurringIncome.amount), 0)).where(RecurringIncome.is_active.is_(True))
+    )
+    planned_recurring_expenses = await db.scalar(
+        select(func.coalesce(func.sum(RecurringExpense.amount), 0)).where(RecurringExpense.is_active.is_(True))
+    )
+
+    recorded_recurring_income = await _sum_recurring_income(db, month_start, month_end)
+    recorded_recurring_expenses = await _sum_expenses(db, month_start, month_end)
+    recurring_income_remaining = max(Decimal(planned_recurring_income or 0) - recorded_recurring_income, Decimal("0.00"))
+    recurring_expenses_remaining = max(Decimal(planned_recurring_expenses or 0) - recorded_recurring_expenses, Decimal("0.00"))
 
     student_balances_total = await db.scalar(
         select(func.coalesce(func.sum(Student.balance), 0)).where(Student.is_active.is_(True), Student.balance > 0)
@@ -421,10 +561,12 @@ async def finance_summary(year: Optional[int] = None, month: Optional[int] = Non
     return FinanceSummary(
         month_start=month_start,
         month_end=month_end,
-        income_from_students=income,
+        income_from_students=income_from_students,
+        recurring_income_total=recurring_income_total,
+        total_income=total_income,
         expenses_total=expense_total,
         expenses_by_category=by_category,
-        net_profit=income - expense_total,
+        net_profit=total_income - expense_total,
         total_school_balance=current_balance,
         student_balances_total=Decimal(student_balances_total or 0),
         negative_student_balances_total=negative_balances_total,
@@ -433,21 +575,27 @@ async def finance_summary(year: Optional[int] = None, month: Optional[int] = Non
         forecast_income_remaining=forecast_remaining,
         active_students=int(active_students),
         monthly_forecast_income=scheduled_income,
+        planned_recurring_income=Decimal(planned_recurring_income or 0),
+        planned_recurring_expenses=Decimal(planned_recurring_expenses or 0),
+        recurring_income_remaining=recurring_income_remaining,
+        recurring_expenses_remaining=recurring_expenses_remaining,
     )
 
 
 @router.get("/transactions", response_model=List[TransactionItem])
 async def transactions(limit: int = 100, include_cancelled: bool = False, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
-    await _ensure_recurring_expenses(db)
     limit = max(1, min(limit, 500))
     payment_query = select(Payment, Student.full_name).join(Student, Student.id == Payment.student_id).order_by(Payment.recorded_at.desc()).limit(limit)
     expense_query = select(Expense).order_by(Expense.expense_date.desc(), Expense.created_at.desc()).limit(limit)
+    recurring_income_query = select(RecurringIncomeRecord).order_by(RecurringIncomeRecord.received_date.desc(), RecurringIncomeRecord.created_at.desc()).limit(limit)
     if not include_cancelled:
         payment_query = payment_query.where(Payment.is_cancelled.is_(False))
         expense_query = expense_query.where(Expense.is_cancelled.is_(False))
+        recurring_income_query = recurring_income_query.where(RecurringIncomeRecord.is_cancelled.is_(False))
 
     payment_rows = await db.execute(payment_query)
     expense_rows = await db.execute(expense_query)
+    recurring_income_rows = await db.execute(recurring_income_query)
 
     items: list[TransactionItem] = []
     for payment, student_name in payment_rows.all():
@@ -462,6 +610,21 @@ async def transactions(limit: int = 100, include_cancelled: bool = False, db: As
                 payment_method=payment.payment_method,
                 description=payment.comment,
                 is_cancelled=payment.is_cancelled,
+                source_type="student_payment",
+            )
+        )
+    for record in recurring_income_rows.scalars().all():
+        items.append(
+            TransactionItem(
+                id=record.id,
+                operation_type="income",
+                amount=record.amount,
+                date=_local_start(record.received_date),
+                payment_method=record.payment_method,
+                description=record.comment,
+                is_cancelled=record.is_cancelled,
+                recurring_income_id=record.recurring_income_id,
+                source_type="recurring_income",
             )
         )
     for expense in expense_rows.scalars().all():
@@ -476,6 +639,7 @@ async def transactions(limit: int = 100, include_cancelled: bool = False, db: As
                 description=expense.description,
                 is_cancelled=expense.is_cancelled,
                 recurring_expense_id=expense.recurring_expense_id,
+                source_type="recurring_expense" if expense.recurring_expense_id else "expense",
             )
         )
     return sorted(items, key=lambda item: item.date, reverse=True)[:limit]
