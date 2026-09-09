@@ -44,6 +44,20 @@ async def list_events(
     return result.scalars().all()
 
 
+@router.get("/events/{event_id}", response_model=EventResponse)
+async def get_event(
+    event_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    event = await db.scalar(select(Event).where(Event.id == event_id))
+    if not event:
+        raise HTTPException(404, "Event not found")
+    if await db.scalar(select(Lesson.id).where(Lesson.event_id == event_id)):
+        raise HTTPException(400, "Lesson events must be managed through /lessons")
+    return event
+
+
 @router.patch("/events/{event_id}", response_model=EventResponse)
 async def update_event(event_id: uuid.UUID, payload: EventUpdate, db: AsyncSession = Depends(get_db), _: User = Depends(teacher_or_admin)):
     event = await db.scalar(select(Event).where(Event.id == event_id).with_for_update())
