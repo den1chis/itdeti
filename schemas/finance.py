@@ -106,10 +106,68 @@ class RecurringExpenseResponse(BaseModel):
     updated_at: datetime
 
 
+class RecurringIncomeCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    amount: Decimal = Field(gt=0)
+    payment_method: str = Field(default="transfer", pattern=PAYMENT_METHOD_PATTERN)
+    day_of_month: int = Field(default=1, ge=1, le=31)
+    description: Optional[str] = None
+
+
+class RecurringIncomeUpdate(RecurringIncomeCreate):
+    is_active: bool = True
+
+
+class RecurringIncomeResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    amount: Decimal
+    payment_method: str
+    day_of_month: int
+    is_active: bool
+    description: Optional[str]
+    created_at: datetime
+    updated_at: datetime
+
+
+class RecurringIncomeRecordCreate(BaseModel):
+    amount: Optional[Decimal] = Field(default=None, gt=0)
+    payment_method: Optional[str] = Field(default=None, pattern=PAYMENT_METHOD_PATTERN)
+    received_date: Optional[date] = None
+    comment: Optional[str] = None
+
+
+class RecurringIncomeRecordUpdate(BaseModel):
+    amount: Decimal = Field(gt=0)
+    payment_method: str = Field(pattern=PAYMENT_METHOD_PATTERN)
+    received_date: date
+    comment: Optional[str] = None
+
+
+class RecurringIncomeRecordResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    recurring_income_id: uuid.UUID
+    recurring_period: date
+    amount: Decimal
+    payment_method: str
+    received_date: date
+    comment: Optional[str]
+    created_at: datetime
+    is_cancelled: bool
+    cancelled_at: Optional[datetime]
+    cancel_reason: Optional[str]
+
+
 class FinanceSummary(BaseModel):
     month_start: date
     month_end: date
     income_from_students: Decimal
+    recurring_income_total: Decimal = Decimal("0.00")
+    total_income: Decimal = Decimal("0.00")
     expenses_total: Decimal
     expenses_by_category: dict[str, Decimal]
     net_profit: Decimal
@@ -121,6 +179,10 @@ class FinanceSummary(BaseModel):
     forecast_income_remaining: Decimal
     active_students: int
     monthly_forecast_income: Decimal
+    planned_recurring_income: Decimal = Decimal("0.00")
+    planned_recurring_expenses: Decimal = Decimal("0.00")
+    recurring_income_remaining: Decimal = Decimal("0.00")
+    recurring_expenses_remaining: Decimal = Decimal("0.00")
 
 
 class TransactionItem(BaseModel):
@@ -135,3 +197,5 @@ class TransactionItem(BaseModel):
     description: Optional[str] = None
     is_cancelled: bool = False
     recurring_expense_id: Optional[uuid.UUID] = None
+    recurring_income_id: Optional[uuid.UUID] = None
+    source_type: Optional[str] = None
