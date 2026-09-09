@@ -104,6 +104,38 @@ async def deactivate_recurring_event(recurring_id: uuid.UUID, db: AsyncSession =
     return series
 
 
+@router.delete("/{recurring_id}/all", status_code=200)
+async def delete_all_recurring_event_occurrences(
+    recurring_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(teacher_or_admin),
+):
+    """Deactivate the series and cancel every generated occurrence.
+
+    Occurrences are soft-cancelled rather than physically deleted, preserving
+    calendar history and avoiding broken references from other CRM records.
+    """
+    series = await db.scalar(select(RecurringEvent).where(RecurringEvent.id == recurring_id).with_for_update())
+    if not series:
+        raise HTTPException(404, "Recurring event not found")
+
+    result = await db.execute(
+        update(Event)
+        .where(Event.recurring_event_id == series.id, Event.is_cancelled.is_(False))
+        .values(is_cancelled=True)
+        .returning(Event.id)
+    )
+    cancelled_count = len(result.scalars().all())
+    series.is_active = False
+    await db.commit()
+
+    return {
+        "ok": True,
+        "recurring_event_id": str(series.id),
+        "cancelled_occurrences": cancelled_count,
+    }
+
+
 @router.get("/{recurring_id}/events")
 async def list_recurring_event_occurrences(
     recurring_id: uuid.UUID,
@@ -114,8 +146,6 @@ async def list_recurring_event_occurrences(
     if not series:
         raise HTTPException(404, "Recurring event not found")
     result = await db.execute(
-        select(Event)
-        .where(Event.recurring_event_id == recurring_id)
-        .order_by(Event.start_time)
+        select(Event).where(Event.recurring_event_id == recurring_id).order_by(Event.start_time)
     )
     return result.scalars().all()
