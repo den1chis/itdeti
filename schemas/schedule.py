@@ -80,7 +80,6 @@ class LessonResponse(BaseModel):
     student_id: uuid.UUID
     lesson_kind: str
     lesson_type: str
-    lesson_type: str
     status: str
     topic: Optional[str]
     is_attended: Optional[bool]
