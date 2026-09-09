@@ -80,6 +80,7 @@ class LessonResponse(BaseModel):
     student_id: uuid.UUID
     lesson_kind: str
     lesson_type: str
+    lesson_type: str
     status: str
     topic: Optional[str]
     is_attended: Optional[bool]
@@ -153,5 +154,6 @@ class EventResponse(BaseModel):
     notes: Optional[str]
     color: str
     is_cancelled: bool
+    recurring_event_id: Optional[uuid.UUID] = None
     created_at: datetime
     updated_at: datetime
