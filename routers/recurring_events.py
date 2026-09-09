@@ -102,3 +102,20 @@ async def deactivate_recurring_event(recurring_id: uuid.UUID, db: AsyncSession =
     await db.commit()
     await db.refresh(series)
     return series
+
+
+@router.get("/{recurring_id}/events")
+async def list_recurring_event_occurrences(
+    recurring_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    series = await db.scalar(select(RecurringEvent).where(RecurringEvent.id == recurring_id))
+    if not series:
+        raise HTTPException(404, "Recurring event not found")
+    result = await db.execute(
+        select(Event)
+        .where(Event.recurring_event_id == recurring_id)
+        .order_by(Event.start_time)
+    )
+    return result.scalars().all()
