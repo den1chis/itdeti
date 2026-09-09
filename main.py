@@ -14,6 +14,7 @@ import models.payment
 import models.refresh_token
 import models.recurring_event
 import models.recurring_expense
+import models.recurring_income
 import models.schedule
 import models.student
 import models.user
