@@ -1,9 +1,12 @@
-from sqlalchemy import Boolean, CheckConstraint, Column, Date, DateTime, Integer, Numeric, String
+from sqlalchemy import Boolean, CheckConstraint, Column, Date, DateTime, Integer, Numeric, String, Enum as SAEnum
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 import uuid
 
 from core.database import Base
+
+
+PAYMENT_METHODS = ("kaspi", "cash", "transfer", "other")
 
 
 class RecurringIncome(Base):
@@ -13,7 +16,11 @@ class RecurringIncome(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(String, nullable=False)
     amount = Column(Numeric(10, 2), nullable=False)
-    payment_method = Column(String, nullable=False, default="transfer")
+    payment_method = Column(
+        SAEnum(*PAYMENT_METHODS, name="expense_payment_method", create_type=False),
+        nullable=False,
+        default="transfer",
+    )
     day_of_month = Column(Integer, nullable=False, default=1)
     is_active = Column(Boolean, nullable=False, default=True)
     description = Column(String, nullable=True)
@@ -26,12 +33,14 @@ class RecurringIncomeRecord(Base):
     __table_args__ = (CheckConstraint("amount > 0", name="ck_recurring_income_records_amount_positive"),)
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    recurring_income_id = Column(
-        UUID(as_uuid=True), nullable=False, index=True
-    )
+    recurring_income_id = Column(UUID(as_uuid=True), nullable=False, index=True)
     recurring_period = Column(Date, nullable=False, index=True)
     amount = Column(Numeric(10, 2), nullable=False)
-    payment_method = Column(String, nullable=False, default="transfer")
+    payment_method = Column(
+        SAEnum(*PAYMENT_METHODS, name="expense_payment_method", create_type=False),
+        nullable=False,
+        default="transfer",
+    )
     received_date = Column(Date, nullable=False, server_default=func.current_date(), index=True)
     comment = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
