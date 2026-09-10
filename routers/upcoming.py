@@ -24,6 +24,7 @@ class UpcomingItem(BaseModel):
     start_time: datetime
     end_time: datetime
     lesson_kind: Optional[str] = None
+    color: Optional[str] = None
 
 
 @router.get("/schedule/upcoming", response_model=List[UpcomingItem])
@@ -35,8 +36,6 @@ async def upcoming_schedule(
     now = datetime.now().astimezone()
     until = now + timedelta(days=days)
 
-    # Занятия. Lesson связан с отдельным Event, поэтому сначала получаем
-    # только события, которые действительно являются занятиями.
     lessons_q = (
         select(Lesson, Event, Student)
         .join(Event, Event.id == Lesson.event_id)
@@ -52,10 +51,8 @@ async def upcoming_schedule(
     lessons_result = await db.execute(lessons_q)
 
     items: List[UpcomingItem] = []
-    lesson_event_ids = set()
 
     for lesson, event, student in lessons_result.all():
-        lesson_event_ids.add(event.id)
         items.append(
             UpcomingItem(
                 item_id=lesson.id,
@@ -66,13 +63,10 @@ async def upcoming_schedule(
                 start_time=event.start_time,
                 end_time=event.end_time,
                 lesson_kind=lesson.lesson_kind,
+                color=event.color,
             )
         )
 
-    # Личные события, встречи и напоминания.
-    # Не сравниваем Event.event_type с несуществующим значением "lesson":
-    # PostgreSQL enum event_type содержит только personal/meeting/reminder.
-    # Вместо этого исключаем события, уже связанные с Lesson.
     events_q = (
         select(Event)
         .where(
@@ -93,6 +87,7 @@ async def upcoming_schedule(
                 title=event.title,
                 start_time=event.start_time,
                 end_time=event.end_time,
+                color=event.color,
             )
         )
 
