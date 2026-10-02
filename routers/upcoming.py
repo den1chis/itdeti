@@ -41,7 +41,7 @@ async def upcoming_schedule(
         .join(Event, Event.id == Lesson.event_id)
         .join(Student, Student.id == Lesson.student_id)
         .where(
-            Event.start_time >= now,
+            Event.end_time > now,
             Event.start_time < until,
             Event.is_cancelled.is_(False),
             Lesson.status != "cancelled",
