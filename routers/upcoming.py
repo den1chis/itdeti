@@ -70,7 +70,7 @@ async def upcoming_schedule(
     events_q = (
         select(Event)
         .where(
-            Event.start_time >= now,
+            Event.end_time > now,
             Event.start_time < until,
             Event.is_cancelled.is_(False),
             ~Event.id.in_(select(Lesson.event_id).where(Lesson.event_id.is_not(None))),
