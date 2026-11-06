@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -54,6 +55,16 @@ app.include_router(events.router)
 app.include_router(recurring_events.router)
 app.include_router(notifications.router)
 app.include_router(upcoming.router)
+
+# LMS (courses/lessons/materials). Additive and isolated: if anything in it fails to import,
+# the rest of the API keeps working and the error is logged.
+try:
+    import models.lms  # noqa: F401
+    from routers import lms
+
+    app.include_router(lms.router)
+except Exception:  # pragma: no cover
+    logging.getLogger("itdeti").exception("LMS module failed to load; the rest of the API is unaffected")
 
 @app.get("/health")
 async def health():
