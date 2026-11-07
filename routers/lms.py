@@ -12,7 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
-from core.course_sync import safe_plan_dates, safe_sync_course, safe_sync_student
+from core.course_sync import LessonDate, pause_student_lessons, safe_plan_dates, safe_sync_course, safe_sync_student
 from core.dependencies import teacher_or_admin
 from core.lms_utils import get_embed_url
 from models.lms import (
@@ -169,7 +169,7 @@ async def _build_tree(
     db: AsyncSession,
     course_id: UUID,
     statuses: Optional[Dict[UUID, str]] = None,
-    dates: Optional[Dict[UUID, Tuple[datetime, Optional[str]]]] = None,
+    dates: Optional[Dict[UUID, LessonDate]] = None,
 ) -> List[ModuleTree]:
     modules = (
         await db.execute(
@@ -210,6 +210,7 @@ async def _build_tree(
                 status=(statuses.get(lesson.id, "not_started") if statuses is not None else None),
                 scheduled_at=(dates[lesson.id][0] if dates and lesson.id in dates else None),
                 calendar_status=(dates[lesson.id][1] if dates and lesson.id in dates else None),
+                held=(dates[lesson.id].held if dates and lesson.id in dates else None),
             )
         )
     return [
@@ -273,6 +274,7 @@ async def _enrollment_response(db: AsyncSession, enrollment: LmsEnrollment, cour
         first_lesson_at=dates[0][0] if dates else None,
         last_lesson_at=dates[-1][0] if dates and plan is not None and plan.end is not None else None,
         lessons_scheduled=len(dates),
+        lessons_held=sum(1 for item in dates if item.held),
     )
 
 
@@ -608,10 +610,14 @@ async def update_enrollment(enrollment_id: UUID, payload: EnrollmentUpdate, db: 
     changes = payload.model_dump(exclude_unset=True)
     if "status" in changes and changes["status"] is None:
         raise HTTPException(400, "status cannot be null")
+    was_paused = enrollment.status == "paused"
     for field, value in changes.items():
         setattr(enrollment, field, value)
     await db.flush()
     if "status" in changes:
+        if enrollment.status == "paused" and not was_paused:
+            # Пауза убирает уроки ученика из календаря; возобновив, Вы задаёте расписание заново
+            await pause_student_lessons(db, enrollment.student_id)
         await safe_sync_student(db, enrollment.student_id)
     await db.commit()
     await db.refresh(enrollment)
@@ -643,7 +649,7 @@ async def student_course_progress(student_id: UUID, course_id: UUID, db: AsyncSe
     started_at = await db.scalar(
         select(LmsEnrollment.started_at).where(LmsEnrollment.student_id == student_id, LmsEnrollment.course_id == course_id)
     )
-    dates: Dict[UUID, Tuple[datetime, Optional[str]]] = {}
+    dates: Dict[UUID, LessonDate] = {}
     if started_at is not None:
         _, plan_dates = await safe_plan_dates(db, student_id, started_at, len(lessons))
         dates = {lesson.id: when for lesson, when in zip(lessons, plan_dates)}

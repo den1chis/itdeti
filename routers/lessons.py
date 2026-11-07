@@ -88,6 +88,30 @@ async def _ensure_schedule_lessons(db: AsyncSession, start: date, end: date) -> 
             current += timedelta(days=7)
 
 
+async def _sync_course_schedule(db: AsyncSession, student_id: uuid.UUID) -> None:
+    """Пересчитывает расписание ученика по назначенному курсу (см. core/course_sync.py): после отмены урока
+    его тема уходит на следующее занятие, и конец курса сдвигается. Сбой синхронизации не ломает основное действие."""
+    try:
+        from core.course_sync import safe_sync_student
+    except Exception:
+        return
+    await safe_sync_student(db, student_id)
+    await db.commit()
+
+
+async def _cancel_lesson(db: AsyncSession, lesson: Lesson) -> None:
+    """Отменить занятие: деньги возвращаются на баланс, событие скрывается из календаря.
+    Само занятие остаётся в базе со статусом «отменено», чтобы расписание не создало его заново."""
+    student = await db.scalar(select(Student).where(Student.id == lesson.student_id).with_for_update())
+    if lesson.balance_deducted and student:
+        student.balance = Decimal(student.balance) + Decimal(lesson.price)
+        lesson.balance_deducted = False
+    lesson.status = "cancelled"
+    event = await db.scalar(select(Event).where(Event.id == lesson.event_id).with_for_update()) if lesson.event_id else None
+    if event:
+        event.is_cancelled = True
+
+
 def _lesson_to_response(lesson: Lesson, event: Event) -> LessonResponse:
     return LessonResponse(
         id=lesson.id,
@@ -198,6 +222,7 @@ async def update_lesson(lesson_id: uuid.UUID, payload: LessonUpdate, db: AsyncSe
         raise HTTPException(500, "Lesson data is incomplete")
 
     old_balance_deducted = lesson.balance_deducted
+    was_cancelled = lesson.status == "cancelled"
 
     if payload.start_time is not None:
         start = payload.start_time if payload.start_time.tzinfo else payload.start_time.replace(tzinfo=LOCAL_TZ)
@@ -228,25 +253,45 @@ async def update_lesson(lesson_id: uuid.UUID, payload: LessonUpdate, db: AsyncSe
         lesson.balance_deducted = False
 
     await db.commit()
+    if lesson.status == "cancelled" and not was_cancelled:
+        await _sync_course_schedule(db, lesson.student_id)
     await db.refresh(lesson)
     await db.refresh(event)
     return _lesson_to_response(lesson, event)
 
 
-@router.delete("/lessons/{lesson_id}", status_code=204)
-async def delete_lesson(lesson_id: uuid.UUID, db: AsyncSession = Depends(get_db), _: User = Depends(teacher_or_admin)):
+@router.post("/lessons/{lesson_id}/cancel", response_model=LessonResponse)
+async def cancel_lesson(lesson_id: uuid.UUID, db: AsyncSession = Depends(get_db), _: User = Depends(teacher_or_admin)):
+    """Отменить урок: на его место в курсе встаёт следующее занятие по расписанию (конец курса сдвигается).
+    Чтобы провести урок в другое время, используйте перенос (PATCH с новым start_time)."""
     lesson = await db.scalar(select(Lesson).where(Lesson.id == lesson_id).with_for_update())
     if not lesson:
         raise HTTPException(404, "Lesson not found")
-    student = await db.scalar(select(Student).where(Student.id == lesson.student_id).with_for_update())
-    if lesson.balance_deducted and student:
-        student.balance = Decimal(student.balance) + Decimal(lesson.price)
-        lesson.balance_deducted = False
-    lesson.status = "cancelled"
-    event = await db.scalar(select(Event).where(Event.id == lesson.event_id).with_for_update())
+    if lesson.status == "completed":
+        raise HTTPException(409, "Проведённый урок отменить нельзя")
+    event = await db.scalar(select(Event).where(Event.id == lesson.event_id)) if lesson.event_id else None
+    if lesson.status != "cancelled":
+        await _cancel_lesson(db, lesson)
+        await db.commit()
+        await _sync_course_schedule(db, lesson.student_id)
+    await db.refresh(lesson)
     if event:
-        event.is_cancelled = True
+        await db.refresh(event)
+    return _lesson_to_response(lesson, event)
+
+
+@router.delete("/lessons/{lesson_id}", status_code=204)
+async def delete_lesson(lesson_id: uuid.UUID, db: AsyncSession = Depends(get_db), _: User = Depends(teacher_or_admin)):
+    """Удалить занятие из календаря. Для ученика с курсом это то же, что отмена: урок курса не пропадает,
+    а переходит на следующее занятие по расписанию."""
+    lesson = await db.scalar(select(Lesson).where(Lesson.id == lesson_id).with_for_update())
+    if not lesson:
+        raise HTTPException(404, "Lesson not found")
+    already_cancelled = lesson.status == "cancelled"
+    await _cancel_lesson(db, lesson)
     await db.commit()
+    if not already_cancelled:
+        await _sync_course_schedule(db, lesson.student_id)
 
 
 async def _schedule_items(db: AsyncSession, start: date, end: date) -> list[ScheduleItem]:

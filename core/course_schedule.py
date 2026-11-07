@@ -8,10 +8,12 @@
   по числу уроков курса, поэтому при пересчёте он не учитывается.
 - Закрытый слот (удалён или заменён) учитывается только в своём окне valid_from..valid_until:
   занятия, которые он уже дал, остаются в счёте.
+- Отменённое занятие уроком курса не считается: его тема переходит на следующее занятие по расписанию,
+  поэтому конец курса сдвигается (передаётся в `skip` как пары «слот, дата»).
 """
 from dataclasses import dataclass
 from datetime import date, time, timedelta
-from typing import Any, List, Optional, Sequence, Tuple
+from typing import Any, Collection, List, Optional, Sequence, Tuple
 
 HORIZON_DAYS = 3 * 366  # дальше трёх лет вперёд уроки не раскладываем
 
@@ -24,6 +26,7 @@ class SlotInfo:
     valid_from: date
     valid_until: Optional[date]
     is_active: bool
+    duration_minutes: int = 60
 
 
 Entry = Tuple[date, SlotInfo]
@@ -37,8 +40,16 @@ def _covers(slot: SlotInfo, day: date) -> bool:
     return slot.valid_until is not None and day <= slot.valid_until
 
 
-def plan_course(slots: Sequence[SlotInfo], anchor: date, lessons_total: int, horizon_days: int = HORIZON_DAYS) -> List[Entry]:
-    """Первые `lessons_total` занятий по расписанию, начиная с `anchor` (включительно), по порядку."""
+def plan_course(
+    slots: Sequence[SlotInfo],
+    anchor: date,
+    lessons_total: int,
+    horizon_days: int = HORIZON_DAYS,
+    skip: Collection[Tuple[Any, date]] = (),
+) -> List[Entry]:
+    """Первые `lessons_total` занятий по расписанию, начиная с `anchor` (включительно), по порядку.
+
+    `skip` — пары (ключ слота, дата) отменённых занятий: они пропускаются и урок курса уходит на следующее занятие."""
     if lessons_total <= 0 or not slots:
         return []
     by_weekday = {weekday: sorted((s for s in slots if s.day_of_week == weekday), key=lambda s: s.start_time) for weekday in range(7)}
@@ -47,7 +58,7 @@ def plan_course(slots: Sequence[SlotInfo], anchor: date, lessons_total: int, hor
     last = anchor + timedelta(days=horizon_days)
     while day <= last and len(entries) < lessons_total:
         for slot in by_weekday[day.weekday()]:
-            if _covers(slot, day):
+            if _covers(slot, day) and (slot.key, day) not in skip:
                 entries.append((day, slot))
                 if len(entries) == lessons_total:
                     break
@@ -60,3 +71,13 @@ def course_end(entries: Sequence[Entry], lessons_total: int) -> Optional[date]:
     if lessons_total > 0 and len(entries) == lessons_total:
         return entries[-1][0]
     return None
+
+
+def pause_window(valid_from: date, today: date, removed_today: bool) -> Optional[date]:
+    """Дата, до которой слот расписания остаётся в счёте курса, когда ученика ставят на паузу.
+
+    Занятия до сегодняшнего дня уже прошли и остаются в счёте. Сегодняшнее остаётся, только если оно не удалено
+    из календаря. None — слот на счёт курса не влияет (ещё не начался), его можно убрать целиком:
+    в базе valid_until не может быть раньше valid_from."""
+    until = today - timedelta(days=1) if removed_today else today
+    return until if until >= valid_from else None

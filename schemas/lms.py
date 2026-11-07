@@ -102,6 +102,7 @@ class LessonBrief(BaseModel):
     status: Optional[str] = None  # filled only in per-student progress view
     scheduled_at: Optional[datetime] = None  # дата урока по расписанию ученика (только в карточке ученика)
     calendar_status: Optional[str] = None  # completed / cancelled / rescheduled, если занятие в календаре не «запланировано»
+    held: Optional[bool] = None  # урок прошёл: по времени уже закончился или отмечен проведённым (только в карточке ученика)
 
 
 class ModuleTree(BaseModel):
@@ -255,6 +256,7 @@ class EnrollmentResponse(BaseModel):
     first_lesson_at: Optional[datetime] = None
     last_lesson_at: Optional[datetime] = None  # заполнено, только когда расписание покрывает все уроки курса
     lessons_scheduled: int = 0  # сколько уроков курса уже получили дату
+    lessons_held: int = 0  # сколько уроков уже прошло по календарю
 
 
 class ProgressUpdate(BaseModel):
