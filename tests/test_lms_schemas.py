@@ -35,3 +35,22 @@ def test_task_kind_and_tests_payload():
     assert task.tests["cases"][0]["expected"] == "3"
     with pytest.raises(ValidationError):
         TaskCreate(title="Bad", kind="quiz")
+
+
+def test_enrollment_schedule_fields_are_validated():
+    from datetime import date, time
+    from uuid import uuid4
+
+    from schemas.lms import EnrollmentCreate, EnrollmentUpdate, StudentCourseSet
+
+    enrollment = EnrollmentCreate(course_id=uuid4(), start_date=date(2026, 11, 10), weekday=1, lesson_time=time(17, 0))
+    assert enrollment.weekday == 1
+    assert EnrollmentCreate(course_id=uuid4()).start_date is None
+    with pytest.raises(ValidationError):
+        EnrollmentCreate(course_id=uuid4(), weekday=7)
+    with pytest.raises(ValidationError):
+        EnrollmentUpdate(weekday=-1)
+    assert EnrollmentUpdate().status is None
+    assert StudentCourseSet().course_id is None
+    with pytest.raises(ValidationError):
+        EnrollmentUpdate(status="stopped")

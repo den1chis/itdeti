@@ -2,7 +2,7 @@
 so nothing here can affect mapper configuration of the existing models."""
 import uuid
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, Column, Date, DateTime, ForeignKey, Integer, SmallInteger, String, Text, Time
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.sql import func
 
@@ -85,6 +85,10 @@ class LmsEnrollment(Base):
     course_id = Column(UUID(as_uuid=True), ForeignKey("lms_courses.id", ondelete="CASCADE"), nullable=False, index=True)
     status = Column(String, nullable=False, default="active")
     started_at = Column(DateTime(timezone=True), server_default=func.now())
+    # Расписание назначения (используется на этапе автоматической расстановки уроков в календаре).
+    start_date = Column(Date, nullable=True)
+    weekday = Column(SmallInteger, nullable=True)  # 0 = понедельник ... 6 = воскресенье
+    lesson_time = Column(Time, nullable=True)
 
 
 class LmsLessonProgress(Base):

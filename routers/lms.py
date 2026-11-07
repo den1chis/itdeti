@@ -52,6 +52,7 @@ from schemas.lms import (
     ProgressUpdate,
     ReorderRequest,
     StudentCourseProgress,
+    StudentCourseSet,
     TaskCreate,
     TaskResponse,
     TaskUpdate,
@@ -127,12 +128,38 @@ async def _course_counts(db: AsyncSession, course_ids: List[UUID]) -> Dict[UUID,
         .where(LmsModule.course_id.in_(course_ids))
         .group_by(LmsModule.course_id)
     )
-    return {course_id: (modules, lessons) for course_id, modules, lessons in rows.all()}
+    counts: Dict[UUID, tuple] = {course_id: (modules, lessons, 0) for course_id, modules, lessons in rows.all()}
+    student_rows = await db.execute(
+        select(LmsEnrollment.course_id, func.count())
+        .where(LmsEnrollment.course_id.in_(course_ids))
+        .group_by(LmsEnrollment.course_id)
+    )
+    for course_id, students in student_rows.all():
+        modules, lessons, _ = counts.get(course_id, (0, 0, 0))
+        counts[course_id] = (modules, lessons, students)
+    return counts
 
 
 def _course_response(course: LmsCourse, counts: Dict[UUID, tuple]) -> CourseResponse:
-    modules, lessons = counts.get(course.id, (0, 0))
-    return CourseResponse.model_validate(course).model_copy(update={"modules_count": modules, "lessons_count": lessons})
+    modules, lessons, students = counts.get(course.id, (0, 0, 0))
+    return CourseResponse.model_validate(course).model_copy(
+        update={"modules_count": modules, "lessons_count": lessons, "students_count": students}
+    )
+
+
+async def _sync_student_course(db: AsyncSession, student_id: UUID) -> None:
+    """Держит старую текстовую строку students.course в соответствии с реальным назначением курса,
+    чтобы таблица «Ученики» и календарь показывали название назначенного курса."""
+    title = await db.scalar(
+        select(LmsCourse.title)
+        .join(LmsEnrollment, LmsEnrollment.course_id == LmsCourse.id)
+        .where(LmsEnrollment.student_id == student_id)
+        .order_by(LmsEnrollment.started_at.desc())
+        .limit(1)
+    )
+    student = await db.scalar(select(Student).where(Student.id == student_id))
+    if student:
+        student.course = title
 
 
 async def _build_tree(db: AsyncSession, course_id: UUID, statuses: Optional[Dict[UUID, str]] = None) -> List[ModuleTree]:
@@ -215,6 +242,9 @@ async def _enrollment_response(db: AsyncSession, enrollment: LmsEnrollment, cour
         course_type=course.course_type,
         status=enrollment.status,
         started_at=enrollment.started_at,
+        start_date=enrollment.start_date,
+        weekday=enrollment.weekday,
+        lesson_time=enrollment.lesson_time,
         lessons_total=len(lessons),
         lessons_done=done,
         next_lesson=NextLesson(id=next_lesson.id, title=next_lesson.title) if next_lesson else None,
@@ -267,15 +297,21 @@ async def create_course(payload: CourseCreate, db: AsyncSession = Depends(get_db
 async def get_course(course_id: UUID, db: AsyncSession = Depends(get_db)):
     course = await _get_course(db, course_id)
     modules = await _build_tree(db, course.id)
-    counts = {course.id: (len(modules), sum(len(module.lessons) for module in modules))}
-    base = _course_response(course, counts)
+    base = _course_response(course, await _course_counts(db, [course.id]))
     return CourseTree(**base.model_dump(), modules=modules)
 
 
 @router.patch("/courses/{course_id}", response_model=CourseResponse)
 async def update_course(course_id: UUID, payload: CourseUpdate, db: AsyncSession = Depends(get_db)):
     course = await _get_course(db, course_id)
+    old_title = course.title
     _apply_changes(course, payload.model_dump(exclude_unset=True), {"title", "course_type", "is_archived", "sort_order"})
+    if course.title != old_title:
+        enrolled = (await db.execute(select(LmsEnrollment.student_id).where(LmsEnrollment.course_id == course.id))).scalars().all()
+        for student_id in enrolled:
+            student = await db.scalar(select(Student).where(Student.id == student_id))
+            if student:
+                student.course = course.title
     await db.commit()
     await db.refresh(course)
     return _course_response(course, await _course_counts(db, [course.id]))
@@ -286,7 +322,7 @@ async def delete_course(course_id: UUID, db: AsyncSession = Depends(get_db)):
     course = await _get_course(db, course_id)
     enrolled = await db.scalar(select(func.count()).select_from(LmsEnrollment).where(LmsEnrollment.course_id == course_id))
     if enrolled:
-        raise HTTPException(409, "Course has enrolled students; archive it instead of deleting")
+        raise HTTPException(409, "На курсе есть ученики, удалить его нельзя. Архивируйте курс или сначала снимите его с учеников.")
     await db.delete(course)
     await db.commit()
 
@@ -472,19 +508,72 @@ async def enroll_student(student_id: UUID, payload: EnrollmentCreate, db: AsyncS
     await _get_student(db, student_id)
     course = await _get_course(db, payload.course_id)
     if course.is_archived:
-        raise HTTPException(400, "Course is archived")
-    existing = await db.scalar(
-        select(LmsEnrollment).where(LmsEnrollment.student_id == student_id, LmsEnrollment.course_id == course.id)
-    )
+        raise HTTPException(400, "Курс в архиве, его нельзя назначить")
+    existing = await db.scalar(select(LmsEnrollment.id).where(LmsEnrollment.student_id == student_id))
     if existing:
-        raise HTTPException(409, "Student is already enrolled in this course")
-    enrollment = LmsEnrollment(student_id=student_id, course_id=course.id)
+        raise HTTPException(409, "У ученика уже есть курс. Сначала снимите его или замените курс.")
+    enrollment = LmsEnrollment(
+        student_id=student_id,
+        course_id=course.id,
+        start_date=payload.start_date,
+        weekday=payload.weekday,
+        lesson_time=payload.lesson_time,
+    )
     db.add(enrollment)
     try:
+        await db.flush()
+        await _sync_student_course(db, student_id)
         await db.commit()
     except IntegrityError as exc:
         await db.rollback()
-        raise HTTPException(409, "Student is already enrolled in this course") from exc
+        raise HTTPException(409, "У ученика уже есть курс. Сначала снимите его или замените курс.") from exc
+    await db.refresh(enrollment)
+    return await _enrollment_response(db, enrollment, course)
+
+
+@router.put("/students/{student_id}/course", response_model=Optional[EnrollmentResponse])
+async def set_student_course(student_id: UUID, payload: StudentCourseSet, db: AsyncSession = Depends(get_db)):
+    """Заменить курс ученика одним действием (для карточки ученика): прежнее назначение снимается,
+    новое создаётся. course_id = null просто снимает курс. Тот же курс, что уже назначен, не пересоздаётся."""
+    await _get_student(db, student_id)
+    current = (await db.execute(select(LmsEnrollment).where(LmsEnrollment.student_id == student_id))).scalars().all()
+    if payload.course_id is None:
+        for enrollment in current:
+            await db.delete(enrollment)
+        await db.flush()
+        await _sync_student_course(db, student_id)
+        await db.commit()
+        return None
+    course = await _get_course(db, payload.course_id)
+    same = next((enrollment for enrollment in current if enrollment.course_id == course.id), None)
+    if same:
+        changes = payload.model_dump(exclude_unset=True, exclude={"course_id"})
+        for field, value in changes.items():
+            setattr(same, field, value)
+        for enrollment in current:
+            if enrollment is not same:
+                await db.delete(enrollment)
+        await db.flush()
+        await _sync_student_course(db, student_id)
+        await db.commit()
+        await db.refresh(same)
+        return await _enrollment_response(db, same, course)
+    if course.is_archived:
+        raise HTTPException(400, "Курс в архиве, его нельзя назначить")
+    for enrollment in current:
+        await db.delete(enrollment)
+    await db.flush()
+    enrollment = LmsEnrollment(
+        student_id=student_id,
+        course_id=course.id,
+        start_date=payload.start_date,
+        weekday=payload.weekday,
+        lesson_time=payload.lesson_time,
+    )
+    db.add(enrollment)
+    await db.flush()
+    await _sync_student_course(db, student_id)
+    await db.commit()
     await db.refresh(enrollment)
     return await _enrollment_response(db, enrollment, course)
 
@@ -494,7 +583,11 @@ async def update_enrollment(enrollment_id: UUID, payload: EnrollmentUpdate, db: 
     enrollment = await db.scalar(select(LmsEnrollment).where(LmsEnrollment.id == enrollment_id))
     if not enrollment:
         raise HTTPException(404, "Enrollment not found")
-    enrollment.status = payload.status
+    changes = payload.model_dump(exclude_unset=True)
+    if "status" in changes and changes["status"] is None:
+        raise HTTPException(400, "status cannot be null")
+    for field, value in changes.items():
+        setattr(enrollment, field, value)
     await db.commit()
     await db.refresh(enrollment)
     course = await _get_course(db, enrollment.course_id)
@@ -507,7 +600,10 @@ async def delete_enrollment(enrollment_id: UUID, db: AsyncSession = Depends(get_
     enrollment = await db.scalar(select(LmsEnrollment).where(LmsEnrollment.id == enrollment_id))
     if not enrollment:
         raise HTTPException(404, "Enrollment not found")
+    student_id = enrollment.student_id
     await db.delete(enrollment)
+    await db.flush()
+    await _sync_student_course(db, student_id)
     await db.commit()
 
 

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime, time
 from typing import Any, Dict, List, Literal, Optional
 import uuid
 
@@ -41,6 +41,7 @@ class CourseResponse(BaseModel):
     updated_at: datetime
     modules_count: int = 0
     lessons_count: int = 0
+    students_count: int = 0  # сколько учеников сейчас назначено на курс
 
 
 # ---------- modules ----------
@@ -210,10 +211,25 @@ class LessonDetail(LessonResponse):
 # ---------- enrollments / progress / notes ----------
 class EnrollmentCreate(BaseModel):
     course_id: uuid.UUID
+    start_date: Optional[date] = None
+    weekday: Optional[int] = Field(default=None, ge=0, le=6)  # 0 = понедельник ... 6 = воскресенье
+    lesson_time: Optional[time] = None
 
 
 class EnrollmentUpdate(BaseModel):
-    status: EnrollmentStatus
+    status: Optional[EnrollmentStatus] = None
+    start_date: Optional[date] = None
+    weekday: Optional[int] = Field(default=None, ge=0, le=6)  # 0 = понедельник ... 6 = воскресенье
+    lesson_time: Optional[time] = None
+
+
+class StudentCourseSet(BaseModel):
+    """Заменить курс ученика одним действием: course_id = null снимает курс."""
+
+    course_id: Optional[uuid.UUID] = None
+    start_date: Optional[date] = None
+    weekday: Optional[int] = Field(default=None, ge=0, le=6)  # 0 = понедельник ... 6 = воскресенье
+    lesson_time: Optional[time] = None
 
 
 class NextLesson(BaseModel):
@@ -229,6 +245,9 @@ class EnrollmentResponse(BaseModel):
     course_type: str
     status: str
     started_at: datetime
+    start_date: Optional[date] = None
+    weekday: Optional[int] = None
+    lesson_time: Optional[time] = None
     lessons_total: int = 0
     lessons_done: int = 0
     next_lesson: Optional[NextLesson] = None
