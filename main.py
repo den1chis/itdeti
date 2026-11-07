@@ -66,6 +66,15 @@ try:
 except Exception:  # pragma: no cover
     logging.getLogger("itdeti").exception("LMS module failed to load; the rest of the API is unaffected")
 
+# Tasks / to-do (migration 011). Isolated the same way as LMS.
+try:
+    import models.tasks  # noqa: F401
+    from routers import tasks as tasks_router
+
+    app.include_router(tasks_router.router)
+except Exception:  # pragma: no cover
+    logging.getLogger("itdeti").exception("Tasks module failed to load; the rest of the API is unaffected")
+
 @app.get("/health")
 async def health():
     return {"status": "ok", "env": settings.APP_ENV}
