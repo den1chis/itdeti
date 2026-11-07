@@ -100,6 +100,8 @@ class LessonBrief(BaseModel):
     materials_count: int = 0
     tasks_count: int = 0
     status: Optional[str] = None  # filled only in per-student progress view
+    scheduled_at: Optional[datetime] = None  # дата урока по расписанию ученика (только в карточке ученика)
+    calendar_status: Optional[str] = None  # completed / cancelled / rescheduled, если занятие в календаре не «запланировано»
 
 
 class ModuleTree(BaseModel):
@@ -211,30 +213,31 @@ class LessonDetail(LessonResponse):
 # ---------- enrollments / progress / notes ----------
 class EnrollmentCreate(BaseModel):
     course_id: uuid.UUID
-    start_date: Optional[date] = None
-    weekday: Optional[int] = Field(default=None, ge=0, le=6)  # 0 = понедельник ... 6 = воскресенье
-    lesson_time: Optional[time] = None
 
 
 class EnrollmentUpdate(BaseModel):
     status: Optional[EnrollmentStatus] = None
-    start_date: Optional[date] = None
-    weekday: Optional[int] = Field(default=None, ge=0, le=6)  # 0 = понедельник ... 6 = воскресенье
-    lesson_time: Optional[time] = None
 
 
 class StudentCourseSet(BaseModel):
     """Заменить курс ученика одним действием: course_id = null снимает курс."""
 
     course_id: Optional[uuid.UUID] = None
-    start_date: Optional[date] = None
-    weekday: Optional[int] = Field(default=None, ge=0, le=6)  # 0 = понедельник ... 6 = воскресенье
-    lesson_time: Optional[time] = None
 
 
 class NextLesson(BaseModel):
     id: uuid.UUID
     title: str
+    scheduled_at: Optional[datetime] = None  # дата и время этого урока по расписанию ученика
+
+
+class ScheduleSlotBrief(BaseModel):
+    """Действующий слот расписания ученика (задаётся в карточке ученика, здесь только показывается)."""
+
+    day_of_week: int  # 0 = понедельник ... 6 = воскресенье
+    start_time: time
+    duration_minutes: int
+    valid_from: date
 
 
 class EnrollmentResponse(BaseModel):
@@ -245,12 +248,13 @@ class EnrollmentResponse(BaseModel):
     course_type: str
     status: str
     started_at: datetime
-    start_date: Optional[date] = None
-    weekday: Optional[int] = None
-    lesson_time: Optional[time] = None
     lessons_total: int = 0
     lessons_done: int = 0
     next_lesson: Optional[NextLesson] = None
+    schedule: List[ScheduleSlotBrief] = Field(default_factory=list)
+    first_lesson_at: Optional[datetime] = None
+    last_lesson_at: Optional[datetime] = None  # заполнено, только когда расписание покрывает все уроки курса
+    lessons_scheduled: int = 0  # сколько уроков курса уже получили дату
 
 
 class ProgressUpdate(BaseModel):

@@ -2,7 +2,8 @@
 student enrollments, lesson progress and private teacher notes.
 
 Everything lives under the /lms prefix, so it cannot collide with existing routes."""
-from typing import Dict, List, Optional
+from datetime import datetime
+from typing import Dict, List, Optional, Tuple
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -11,6 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
+from core.course_sync import safe_plan_dates, safe_sync_course, safe_sync_student
 from core.dependencies import teacher_or_admin
 from core.lms_utils import get_embed_url
 from models.lms import (
@@ -51,6 +53,7 @@ from schemas.lms import (
     ProgressResponse,
     ProgressUpdate,
     ReorderRequest,
+    ScheduleSlotBrief,
     StudentCourseProgress,
     StudentCourseSet,
     TaskCreate,
@@ -162,7 +165,12 @@ async def _sync_student_course(db: AsyncSession, student_id: UUID) -> None:
         student.course = title
 
 
-async def _build_tree(db: AsyncSession, course_id: UUID, statuses: Optional[Dict[UUID, str]] = None) -> List[ModuleTree]:
+async def _build_tree(
+    db: AsyncSession,
+    course_id: UUID,
+    statuses: Optional[Dict[UUID, str]] = None,
+    dates: Optional[Dict[UUID, Tuple[datetime, Optional[str]]]] = None,
+) -> List[ModuleTree]:
     modules = (
         await db.execute(
             select(LmsModule).where(LmsModule.course_id == course_id).order_by(LmsModule.sort_order, LmsModule.created_at)
@@ -200,6 +208,8 @@ async def _build_tree(db: AsyncSession, course_id: UUID, statuses: Optional[Dict
                 materials_count=material_counts.get(lesson.id, 0),
                 tasks_count=task_counts.get(lesson.id, 0),
                 status=(statuses.get(lesson.id, "not_started") if statuses is not None else None),
+                scheduled_at=(dates[lesson.id][0] if dates and lesson.id in dates else None),
+                calendar_status=(dates[lesson.id][1] if dates and lesson.id in dates else None),
             )
         )
     return [
@@ -233,7 +243,13 @@ async def _enrollment_response(db: AsyncSession, enrollment: LmsEnrollment, cour
     lessons = await _course_lessons_ordered(db, course.id)
     statuses = await _student_statuses(db, enrollment.student_id, [lesson.id for lesson in lessons])
     done = sum(1 for lesson in lessons if statuses.get(lesson.id) == "done")
-    next_lesson = next((lesson for lesson in lessons if statuses.get(lesson.id) != "done"), None)
+    next_index = next((index for index, lesson in enumerate(lessons) if statuses.get(lesson.id) != "done"), None)
+    plan, dates = await safe_plan_dates(db, enrollment.student_id, enrollment.started_at, len(lessons))
+    next_lesson = None
+    if next_index is not None:
+        when = dates[next_index][0] if next_index < len(dates) else None
+        next_lesson = NextLesson(id=lessons[next_index].id, title=lessons[next_index].title, scheduled_at=when)
+    slots = sorted(plan.active_slots, key=lambda slot: (slot.day_of_week, slot.start_time)) if plan else []
     return EnrollmentResponse(
         id=enrollment.id,
         student_id=enrollment.student_id,
@@ -242,12 +258,21 @@ async def _enrollment_response(db: AsyncSession, enrollment: LmsEnrollment, cour
         course_type=course.course_type,
         status=enrollment.status,
         started_at=enrollment.started_at,
-        start_date=enrollment.start_date,
-        weekday=enrollment.weekday,
-        lesson_time=enrollment.lesson_time,
         lessons_total=len(lessons),
         lessons_done=done,
-        next_lesson=NextLesson(id=next_lesson.id, title=next_lesson.title) if next_lesson else None,
+        next_lesson=next_lesson,
+        schedule=[
+            ScheduleSlotBrief(
+                day_of_week=slot.day_of_week,
+                start_time=slot.start_time,
+                duration_minutes=slot.duration_minutes,
+                valid_from=slot.valid_from,
+            )
+            for slot in slots
+        ],
+        first_lesson_at=dates[0][0] if dates else None,
+        last_lesson_at=dates[-1][0] if dates and plan is not None and plan.end is not None else None,
+        lessons_scheduled=len(dates),
     )
 
 
@@ -357,16 +382,21 @@ async def update_module(module_id: UUID, payload: ModuleUpdate, db: AsyncSession
 @router.delete("/modules/{module_id}", status_code=204)
 async def delete_module(module_id: UUID, db: AsyncSession = Depends(get_db)):
     module = await _get_module(db, module_id)
+    course_id = module.course_id
     await db.delete(module)
+    await db.flush()
+    await safe_sync_course(db, course_id)
     await db.commit()
 
 
 # ---------------------------------------------------------------- lessons
 @router.post("/modules/{module_id}/lessons", response_model=LessonResponse, status_code=201)
 async def create_lesson(module_id: UUID, payload: LessonCreate, db: AsyncSession = Depends(get_db)):
-    await _get_module(db, module_id)
+    module = await _get_module(db, module_id)
     lesson = LmsLesson(module_id=module_id, sort_order=await _next_order(db, LmsLesson, LmsLesson.module_id, module_id), **payload.model_dump())
     db.add(lesson)
+    await db.flush()
+    await safe_sync_course(db, module.course_id)  # число уроков курса выросло: расписание учеников удлиняется
     await db.commit()
     await db.refresh(lesson)
     return lesson
@@ -422,7 +452,10 @@ async def update_lesson(lesson_id: UUID, payload: LessonUpdate, db: AsyncSession
 @router.delete("/lessons/{lesson_id}", status_code=204)
 async def delete_lesson(lesson_id: UUID, db: AsyncSession = Depends(get_db)):
     lesson = await _get_lesson(db, lesson_id)
+    module = await _get_module(db, lesson.module_id)
     await db.delete(lesson)
+    await db.flush()
+    await safe_sync_course(db, module.course_id)
     await db.commit()
 
 
@@ -512,17 +545,12 @@ async def enroll_student(student_id: UUID, payload: EnrollmentCreate, db: AsyncS
     existing = await db.scalar(select(LmsEnrollment.id).where(LmsEnrollment.student_id == student_id))
     if existing:
         raise HTTPException(409, "У ученика уже есть курс. Сначала снимите его или замените курс.")
-    enrollment = LmsEnrollment(
-        student_id=student_id,
-        course_id=course.id,
-        start_date=payload.start_date,
-        weekday=payload.weekday,
-        lesson_time=payload.lesson_time,
-    )
+    enrollment = LmsEnrollment(student_id=student_id, course_id=course.id)
     db.add(enrollment)
     try:
         await db.flush()
         await _sync_student_course(db, student_id)
+        await safe_sync_student(db, student_id)
         await db.commit()
     except IntegrityError as exc:
         await db.rollback()
@@ -542,19 +570,18 @@ async def set_student_course(student_id: UUID, payload: StudentCourseSet, db: As
             await db.delete(enrollment)
         await db.flush()
         await _sync_student_course(db, student_id)
+        await safe_sync_student(db, student_id)
         await db.commit()
         return None
     course = await _get_course(db, payload.course_id)
     same = next((enrollment for enrollment in current if enrollment.course_id == course.id), None)
     if same:
-        changes = payload.model_dump(exclude_unset=True, exclude={"course_id"})
-        for field, value in changes.items():
-            setattr(same, field, value)
         for enrollment in current:
             if enrollment is not same:
                 await db.delete(enrollment)
         await db.flush()
         await _sync_student_course(db, student_id)
+        await safe_sync_student(db, student_id)
         await db.commit()
         await db.refresh(same)
         return await _enrollment_response(db, same, course)
@@ -563,16 +590,11 @@ async def set_student_course(student_id: UUID, payload: StudentCourseSet, db: As
     for enrollment in current:
         await db.delete(enrollment)
     await db.flush()
-    enrollment = LmsEnrollment(
-        student_id=student_id,
-        course_id=course.id,
-        start_date=payload.start_date,
-        weekday=payload.weekday,
-        lesson_time=payload.lesson_time,
-    )
+    enrollment = LmsEnrollment(student_id=student_id, course_id=course.id)
     db.add(enrollment)
     await db.flush()
     await _sync_student_course(db, student_id)
+    await safe_sync_student(db, student_id)
     await db.commit()
     await db.refresh(enrollment)
     return await _enrollment_response(db, enrollment, course)
@@ -588,6 +610,9 @@ async def update_enrollment(enrollment_id: UUID, payload: EnrollmentUpdate, db: 
         raise HTTPException(400, "status cannot be null")
     for field, value in changes.items():
         setattr(enrollment, field, value)
+    await db.flush()
+    if "status" in changes:
+        await safe_sync_student(db, enrollment.student_id)
     await db.commit()
     await db.refresh(enrollment)
     course = await _get_course(db, enrollment.course_id)
@@ -604,6 +629,7 @@ async def delete_enrollment(enrollment_id: UUID, db: AsyncSession = Depends(get_
     await db.delete(enrollment)
     await db.flush()
     await _sync_student_course(db, student_id)
+    await safe_sync_student(db, student_id)
     await db.commit()
 
 
@@ -614,7 +640,14 @@ async def student_course_progress(student_id: UUID, course_id: UUID, db: AsyncSe
     course = await _get_course(db, course_id)
     lessons = await _course_lessons_ordered(db, course_id)
     statuses = await _student_statuses(db, student_id, [lesson.id for lesson in lessons])
-    modules = await _build_tree(db, course_id, statuses)
+    started_at = await db.scalar(
+        select(LmsEnrollment.started_at).where(LmsEnrollment.student_id == student_id, LmsEnrollment.course_id == course_id)
+    )
+    dates: Dict[UUID, Tuple[datetime, Optional[str]]] = {}
+    if started_at is not None:
+        _, plan_dates = await safe_plan_dates(db, student_id, started_at, len(lessons))
+        dates = {lesson.id: when for lesson, when in zip(lessons, plan_dates)}
+    modules = await _build_tree(db, course_id, statuses, dates)
     return StudentCourseProgress(
         student_id=student_id,
         course_id=course_id,

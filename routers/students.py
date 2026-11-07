@@ -23,6 +23,17 @@ from schemas.students import BalanceResponse, ParentCreate, ParentResponse, Pare
 router = APIRouter(tags=["students"])
 
 
+async def _sync_course_schedule(db: AsyncSession, student_id: UUID) -> None:
+    """Ограничивает расписание ученика числом уроков назначенного курса (см. core/course_sync.py).
+    Импорт ленивый, а сбой внутри перехватывается: расписание работает как раньше, даже если синхронизация недоступна."""
+    try:
+        from core.course_sync import safe_sync_student
+    except Exception:
+        return
+    await safe_sync_student(db, student_id)
+    await db.commit()
+
+
 def _period_occurrences(slot: StudentScheduleSlot, start: date, end: date) -> int:
     if end < start or not slot.is_active:
         return 0
@@ -152,13 +163,14 @@ async def create_schedule_slot(student_id: UUID, payload: ScheduleSlotCreate, db
         if not duplicate.is_active:
             for field, value in payload.model_dump().items(): setattr(duplicate, field, value)
             duplicate.is_active = True; duplicate.valid_until = None
-            await db.commit(); await db.refresh(duplicate); return duplicate
+            await db.commit(); await _sync_course_schedule(db, student_id); await db.refresh(duplicate); return duplicate
         raise HTTPException(409, "This schedule entry already exists")
     slot = StudentScheduleSlot(student_id=student_id, **payload.model_dump()); db.add(slot)
     try:
         await db.commit()
     except IntegrityError as exc:
         await db.rollback(); raise HTTPException(409, "This schedule entry already exists") from exc
+    await _sync_course_schedule(db, student_id)
     await db.refresh(slot); return slot
 
 
@@ -185,6 +197,7 @@ async def update_schedule_slot(student_id: UUID, slot_id: UUID, payload: Schedul
         await db.commit()
     except IntegrityError as exc:
         await db.rollback(); raise HTTPException(409, "This schedule entry already exists") from exc
+    await _sync_course_schedule(db, student_id)
     await db.refresh(slot); return slot
 
 
@@ -195,6 +208,7 @@ async def deactivate_schedule_slot(student_id: UUID, slot_id: UUID, db: AsyncSes
     future = await db.execute(select(Lesson, Event).join(Event, Event.id == Lesson.event_id).where(Lesson.schedule_slot_id == slot.id, Lesson.status.in_(["scheduled", "rescheduled"]), Lesson.original_start_time.is_not(None), Lesson.original_start_time >= datetime.now().astimezone()))
     for lesson, event in future.all(): await db.delete(lesson); await db.delete(event)
     slot.is_active = False; slot.valid_until = date.today(); await db.commit()
+    await _sync_course_schedule(db, student_id)
 
 
 @router.get("/students/{student_id}/balance", response_model=BalanceResponse)

@@ -37,20 +37,30 @@ def test_task_kind_and_tests_payload():
         TaskCreate(title="Bad", kind="quiz")
 
 
-def test_enrollment_schedule_fields_are_validated():
-    from datetime import date, time
+def test_enrollment_payloads_and_status_validation():
     from uuid import uuid4
 
     from schemas.lms import EnrollmentCreate, EnrollmentUpdate, StudentCourseSet
 
-    enrollment = EnrollmentCreate(course_id=uuid4(), start_date=date(2026, 11, 10), weekday=1, lesson_time=time(17, 0))
-    assert enrollment.weekday == 1
-    assert EnrollmentCreate(course_id=uuid4()).start_date is None
-    with pytest.raises(ValidationError):
-        EnrollmentCreate(course_id=uuid4(), weekday=7)
-    with pytest.raises(ValidationError):
-        EnrollmentUpdate(weekday=-1)
+    assert EnrollmentCreate(course_id=uuid4()).course_id is not None
     assert EnrollmentUpdate().status is None
     assert StudentCourseSet().course_id is None
     with pytest.raises(ValidationError):
         EnrollmentUpdate(status="stopped")
+
+
+def test_enrollment_response_carries_schedule_view():
+    from datetime import date, datetime, time
+    from uuid import uuid4
+
+    from schemas.lms import EnrollmentResponse, NextLesson, ScheduleSlotBrief
+
+    now = datetime(2026, 11, 10, 17, 0)
+    response = EnrollmentResponse(
+        id=uuid4(), student_id=uuid4(), course_id=uuid4(), course_title="Python", course_type="code", status="active",
+        started_at=now, lessons_total=42, lessons_scheduled=42, first_lesson_at=now,
+        next_lesson=NextLesson(id=uuid4(), title="Intro", scheduled_at=now),
+        schedule=[ScheduleSlotBrief(day_of_week=1, start_time=time(17, 0), duration_minutes=60, valid_from=date(2026, 11, 10))],
+    )
+    assert response.schedule[0].day_of_week == 1
+    assert response.last_lesson_at is None
