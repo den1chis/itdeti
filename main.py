@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from core.background import start_background_jobs, stop_background_jobs
 from core.config import settings
 from core.database import Base, engine
 
@@ -28,7 +29,9 @@ async def lifespan(app: FastAPI):
     if settings.APP_ENV == "development":
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+    start_background_jobs()
     yield
+    await stop_background_jobs()
     await engine.dispose()
 
 
@@ -38,9 +41,17 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Local addresses of the student site (itdetiLearn, `python -m http.server 5500`).
+# NB: "*" is still in the list (existing behaviour, CRM depends on it); the explicit entries keep the
+# student site working once the wildcard is replaced by a real list of origins.
+STUDENT_SITE_LOCAL_ORIGINS = ["http://localhost:5500", "http://127.0.0.1:5500"]
+CORS_ORIGINS = ["*"] + STUDENT_SITE_LOCAL_ORIGINS + [
+    origin.strip() for origin in settings.CORS_EXTRA_ORIGINS.split(",") if origin.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

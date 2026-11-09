@@ -20,6 +20,13 @@ class Settings(BaseSettings):
     APP_ENV: str = "development"
     APP_HOST: str = "0.0.0.0"
     APP_PORT: int = 8000
+    # true -> background jobs (reminders, timed notification processing, ...) are not started.
+    # Useful for local work against the dev database.
+    DISABLE_SCHEDULER: bool = False
+    # Student site (itdetiLearn): short-lived access token, no refresh token.
+    STUDENT_TOKEN_EXPIRE_MINUTES: int = 120
+    # Extra CORS origins (comma separated) on top of the built-in local student-site addresses.
+    CORS_EXTRA_ORIGINS: str = ""
 
 
 @lru_cache
