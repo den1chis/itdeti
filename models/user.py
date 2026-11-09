@@ -12,7 +12,7 @@ class User(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     email = Column(String, unique=True, nullable=False)
     password_hash = Column(String, nullable=False)
-    role = Column(SAEnum("admin", "teacher", "parent", "student", name="user_role"), default="admin")
+    role = Column(SAEnum("admin", "teacher", "parent", "student", "methodist", name="user_role"), default="admin")
     full_name = Column(String, nullable=False)
     phone = Column(String)
     is_active = Column(Boolean, default=True)

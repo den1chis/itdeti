@@ -16,7 +16,13 @@ async def get_current_user(
     token = credentials.credentials
     payload = decode_token(token)
 
-    if not payload or payload.get("type") == "refresh":
+    # Student-site tokens (role=student, no "sub") never open CRM routes.
+    if (
+        not payload
+        or payload.get("type") == "refresh"
+        or payload.get("role") == "student"
+        or not payload.get("sub")
+    ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired token",

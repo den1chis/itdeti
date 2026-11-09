@@ -86,6 +86,19 @@ try:
 except Exception:  # pragma: no cover
     logging.getLogger("itdeti").exception("Tasks module failed to load; the rest of the API is unaffected")
 
+# Student site (migration migrations/001): student login + cabinet (/student/...) and the admin
+# "student access" block (/students/{id}/access). Isolated the same way as LMS.
+try:
+    import models.lms  # noqa: F401,F811
+    import models.student_account  # noqa: F401
+    from routers import student_access, student_site
+
+    app.include_router(student_site.router)
+    app.include_router(student_access.router)
+except Exception:  # pragma: no cover
+    logging.getLogger("itdeti").exception("Student site module failed to load; the rest of the API is unaffected")
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok", "env": settings.APP_ENV}
