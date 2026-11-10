@@ -1,8 +1,8 @@
 """Very small in-memory sliding-window rate limiter (per key, e.g. client IP).
 
 Limitations (see REPORT.md): state lives in one process - it is reset on restart and is not shared
-between several workers/instances; behind a proxy the key is the proxy address unless uvicorn runs
-with --proxy-headers / --forwarded-allow-ips."""
+between several workers/instances. Behind a proxy the key must come from core.client_ip.client_ip
+(BEHIND_PROXY / TRUSTED_PROXY_HOPS), otherwise every client shares the proxy address."""
 import time
 from collections import deque
 from typing import Deque, Dict, Optional

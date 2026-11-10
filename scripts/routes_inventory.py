@@ -13,6 +13,9 @@ import sys
 from pathlib import Path
 
 os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
+# The documentation routes exist only with ENABLE_DOCS=true (night 3); list them anyway.
+os.environ["ENABLE_DOCS"] = "true"
+DOCS_LABEL = "public, only with ENABLE_DOCS=true (404 otherwise)"
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 ROOT = Path(__file__).resolve().parent.parent
@@ -61,7 +64,7 @@ def route_rows(app):
                 rows.append({"method": method, "path": route.path, "router": router, "access": label or "NONE"})
             else:
                 rows.append({"method": method, "path": route.path, "router": "fastapi (docs)",
-                             "access": "public" if (method, route.path) in PUBLIC_ROUTES else "public (docs)"})
+                             "access": DOCS_LABEL if (method, route.path) in PUBLIC_ROUTES else "public (docs)"})
     rows.sort(key=lambda r: (r["router"], r["path"], r["method"]))
     return rows
 

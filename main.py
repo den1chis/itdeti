@@ -35,19 +35,33 @@ async def lifespan(app: FastAPI):
     await engine.dispose()
 
 
+def docs_urls(enabled: bool) -> dict:
+    """Swagger UI, ReDoc and openapi.json exist only when ENABLE_DOCS=true (explicitly, not via APP_ENV)."""
+    if enabled:
+        return {"docs_url": "/docs", "redoc_url": "/redoc", "openapi_url": "/openapi.json"}
+    return {"docs_url": None, "redoc_url": None, "openapi_url": None}
+
+
+def cors_origins(primary: str, extra: str = "") -> list:
+    """Explicit list of allowed origins: CORS_ORIGINS + CORS_EXTRA_ORIGINS (comma separated, no "*")."""
+    origins = []
+    for origin in f"{primary},{extra}".split(","):
+        origin = origin.strip().rstrip("/")
+        if origin and origin != "*" and origin not in origins:
+            origins.append(origin)
+    return origins
+
+
 app = FastAPI(
     title="itdeti AI System",
     version="2.0.0",
     lifespan=lifespan,
+    **docs_urls(settings.ENABLE_DOCS),
 )
 
-# Local addresses of the student site (itdetiLearn, `python -m http.server 5500`).
-# NB: "*" is still in the list (existing behaviour, CRM depends on it); the explicit entries keep the
-# student site working once the wildcard is replaced by a real list of origins.
-STUDENT_SITE_LOCAL_ORIGINS = ["http://localhost:5500", "http://127.0.0.1:5500"]
-CORS_ORIGINS = ["*"] + STUDENT_SITE_LOCAL_ORIGINS + [
-    origin.strip() for origin in settings.CORS_EXTRA_ORIGINS.split(",") if origin.strip()
-]
+# Explicit origins instead of "*": CRM and the student site on GitHub Pages (https://den1chis.github.io),
+# local copies on ports 5500/5501, plus CORS_EXTRA_ORIGINS. Auth is the Authorization header (no cookies).
+CORS_ORIGINS = cors_origins(settings.CORS_ORIGINS, settings.CORS_EXTRA_ORIGINS)
 
 app.add_middleware(
     CORSMiddleware,

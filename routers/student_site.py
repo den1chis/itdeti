@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.config import settings
 from core.database import get_db
 from core.lms_utils import get_embed_url
+from core.client_ip import client_ip
 from core.rate_limit import SlidingWindowLimiter
 from core.security import verify_password
 from core.student_auth import CurrentStudent, create_student_token, get_current_student
@@ -57,7 +58,7 @@ def _minutes_left(until: datetime, now: datetime) -> int:
 # ---------------------------------------------------------------- login
 @router.post("/auth/login", response_model=StudentLoginResponse)
 async def student_login(payload: StudentLoginRequest, request: Request, db: AsyncSession = Depends(get_db)):
-    ip = request.client.host if request.client else "unknown"
+    ip = client_ip(request)
     wait = login_limiter.hit(ip)
     if wait is not None:
         raise HTTPException(
