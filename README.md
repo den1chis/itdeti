@@ -98,3 +98,18 @@ API documentation:
 - `POST /notifications/{id}/confirm`
 
 Kaspi/WhatsApp notifications are stored and parsed, but payment creation remains an explicit financial operation. AI automation can be connected later through Claude.
+
+## Access model (roles)
+
+Every route has an explicit access class (`core/access.py`); see `docs/ROUTES_ACCESS.md` for the full table.
+
+- Roles: `admin`, `teacher`, `methodist`; a user has a set of roles (`users.roles`, migration 013), permissions add up.
+- All management routes above (students, parents, lessons, calendar, events, finance, notifications, tasks) are **admin only**.
+- Teacher: read-only `/teacher/*` (own students, own lessons, substitutions; no money fields), LMS catalog read,
+  notes and student-site access of own students (view password, reset, unlock). Foreign data -> 404.
+- Methodist: LMS catalog read and write.
+- Admin: `/staff` (staff users, roles, dismissal rule), `PUT /students/{id}/teacher`, `PUT /lessons/{id}/teacher`.
+- `STUDENT_PASSWORD_KEY` (Fernet) enables viewing student passwords; without it everything else works.
+
+Migrations live in `supabase/migrations/`; apply them to the dev database with `python scripts/apply_migration.py <number>`.
+Deploy order: migrations first, then the code.

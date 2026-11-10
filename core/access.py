@@ -138,6 +138,22 @@ def access_markers(route) -> list:
     return labels
 
 
+def unmarked_routes(app) -> list:
+    """(method, path) of every route that has no access-class marker and is not in PUBLIC_ROUTES.
+    Must be empty; checked by tests/test_access_model.py."""
+    from fastapi.routing import APIRoute
+
+    missing = []
+    for route in app.routes:
+        methods = sorted(m for m in (getattr(route, "methods", None) or []) if m != "HEAD")
+        for method in methods:
+            if (method, route.path) in PUBLIC_ROUTES:
+                continue
+            if not isinstance(route, APIRoute) or not access_markers(route):
+                missing.append((method, route.path))
+    return missing
+
+
 def access_label(route) -> str:
     """Human-readable access class of a route (for docs/ROUTES_ACCESS.md)."""
     labels = access_markers(route)
