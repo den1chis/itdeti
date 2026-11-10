@@ -7,7 +7,8 @@
 Dismissal rule: deactivating a user or taking the teacher role away while students or future substitutions
 are still assigned to them -> 409 with the list. On deactivation all refresh tokens of the user are deleted
 (access tokens stop working at once anyway: get_current_user checks is_active on every request).
-The last active admin can be neither deactivated nor lose the admin role."""
+The last active admin can be neither deactivated nor lose the admin role; an admin can do neither to themselves
+(409 self_deactivation / self_demotion)."""
 import logging
 import secrets
 import string
@@ -22,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.access import ADMIN, STAFF_ROLES, TEACHER, active_teacher_or_400, primary_role, require_admin, role_sql, roles_of
 from core.database import get_db
+from core.dependencies import get_current_user
 from core.security import hash_password
 from models.lesson import Lesson
 from models.refresh_token import RefreshToken
@@ -155,7 +157,12 @@ async def create_staff(payload: StaffCreate, response: Response, db: AsyncSessio
 
 
 @router.patch("/staff/{user_id}", response_model=StaffResponse)
-async def update_staff(user_id: UUID, payload: StaffUpdate, db: AsyncSession = Depends(get_db)):
+async def update_staff(
+    user_id: UUID,
+    payload: StaffUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     user = await _staff_or_404(db, user_id)
     changes = payload.model_dump(exclude_unset=True)
     for field in ("full_name", "is_active", "roles"):
@@ -168,6 +175,12 @@ async def update_staff(user_id: UUID, payload: StaffUpdate, db: AsyncSession = D
     losing_teacher = TEACHER in old_roles and TEACHER not in new_roles
     losing_admin = ADMIN in old_roles and ADMIN not in new_roles
 
+    if user.id == current_user.id:
+        # An admin never switches themselves off or takes their own admin role away (another admin can).
+        if deactivating:
+            raise HTTPException(409, {"code": "self_deactivation", "message": "Нельзя выключить самого себя"})
+        if losing_admin:
+            raise HTTPException(409, {"code": "self_demotion", "message": "Нельзя снять с себя роль admin"})
     if (deactivating or losing_admin) and ADMIN in old_roles and user.is_active and not await _other_active_admins(db, user.id):
         raise HTTPException(409, {"code": "last_admin", "message": "Это последний активный администратор: его нельзя выключить или лишить роли admin"})
     if deactivating or losing_teacher:
