@@ -280,7 +280,8 @@ def test_admin_creates_resets_and_disables_access(client, world):
     teacher = bearer(create_access_token(str(world["teacher"].id), "teacher"))
     sid = world["D"].id
 
-    assert client.get(f"/students/{sid}/access", headers=teacher).status_code == 403
+    # Night 2 (intentional change): a teacher may see access of OWN students; a foreign student -> 404, not 403.
+    assert client.get(f"/students/{sid}/access", headers=teacher).status_code == 404
     assert client.get(f"/students/{sid}/access", headers=admin).json()["exists"] is False
 
     suggestion = client.get(f"/students/{sid}/access/login-suggestion", headers=admin).json()["login"]
