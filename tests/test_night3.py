@@ -343,3 +343,10 @@ def test_header_ignored_without_behind_proxy(client, monkeypatch):
         assert _student_login(client, "203.0.113.250").status_code == 429
     finally:
         login_limiter.reset()
+
+
+def test_app_env_defaults_to_production(monkeypatch):
+    # Part 2: a missing APP_ENV must never mean "development" (that value runs create_all on start).
+    monkeypatch.delenv("APP_ENV", raising=False)
+    s = Settings(_env_file=None, DATABASE_URL="postgresql+asyncpg://x@localhost/x", JWT_SECRET_KEY="x")
+    assert s.APP_ENV == "production"

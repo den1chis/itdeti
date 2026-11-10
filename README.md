@@ -46,7 +46,8 @@ Security related variables (details in `.env.example` and `docs/DEPLOY_RUNBOOK.m
   `https://den1chis.github.io` and the local ports 5500/5501).
 - `BEHIND_PROXY`, `TRUSTED_PROXY_HOPS` - real client IP for the student login rate limit behind Render's proxy.
 - `STUDENT_PASSWORD_KEY` - Fernet key for viewable student passwords.
-- `APP_ENV` - must not be `development` in production (that value runs `create_all` on start).
+- `APP_ENV` - default `production` (safe: also when the variable is missing). Locally `dev`. Never `development`
+  on a real database: that value runs `create_all` on start (tables without migrations and RLS) and logs every SQL query.
 
 For Supabase use a connection string based on the Session Pooler (`:5432`), not the Transaction Pooler (`:6543`).
 

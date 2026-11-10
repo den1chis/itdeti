@@ -18,7 +18,9 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 30
     ANTHROPIC_API_KEY: Optional[str] = None
-    APP_ENV: str = "development"
+    # Safe default: "production". Only the explicit value "development" runs create_all on start (main.py)
+    # and SQL echo (core/database.py); local work uses APP_ENV=dev in .env.
+    APP_ENV: str = "production"
     APP_HOST: str = "0.0.0.0"
     APP_PORT: int = 8000
     # true -> background jobs (reminders, timed notification processing, ...) are not started.
