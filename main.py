@@ -98,6 +98,17 @@ try:
 except Exception:  # pragma: no cover
     logging.getLogger("itdeti").exception("Student site module failed to load; the rest of the API is unaffected")
 
+# Access model (night 2, migrations 012-013): teacher read-only routes (/teacher/*) and staff management
+# (/staff, teacher assignment). Isolated the same way: if they fail to load, the rest of the API works.
+try:
+    from routers import staff as staff_router
+    from routers import teacher as teacher_router
+
+    app.include_router(teacher_router.router)
+    app.include_router(staff_router.router)
+except Exception:  # pragma: no cover
+    logging.getLogger("itdeti").exception("Teacher/staff module failed to load; the rest of the API is unaffected")
+
 
 @app.get("/health")
 async def health():
