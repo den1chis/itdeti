@@ -65,6 +65,10 @@ async def refresh(payload: RefreshRequest, db: AsyncSession = Depends(get_db)):
     user = user_result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
+    # A deactivated user gets no new tokens (is_active may also be NULL in old rows -> treated as inactive,
+    # the same as get_current_user does).
+    if user.is_active is not True:
+        raise HTTPException(status_code=401, detail="User is inactive")
 
     # Ротация токена
     await db.delete(stored)
