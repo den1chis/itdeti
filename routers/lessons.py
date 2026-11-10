@@ -246,6 +246,10 @@ async def update_lesson(lesson_id: uuid.UUID, payload: LessonUpdate, db: AsyncSe
     if lesson.lesson_type == "trial":
         lesson.price = Decimal("0.00")
 
+    # Night 2: the actual teacher of a held lesson is fixed in the lesson; only fills an empty value.
+    if lesson.status == "completed" and lesson.teacher_id is None:
+        lesson.teacher_id = student.teacher_id
+
     should_deduct = lesson.status == "completed" and lesson.lesson_type != "trial"
     if should_deduct and not old_balance_deducted:
         student.balance = Decimal(student.balance) - Decimal(lesson.price)

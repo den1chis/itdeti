@@ -113,6 +113,7 @@ async def create_manual_lesson(
         balance_deducted=payload.lesson_type != "trial",
         schedule_slot_id=None,
         original_start_time=start,
+        teacher_id=student.teacher_id,  # night 2: actual teacher of the held lesson
     )
     db.add(lesson)
     if payload.lesson_type != "trial":
