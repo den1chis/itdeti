@@ -14,6 +14,9 @@ class Student(Base):
     full_name = Column(String, nullable=False)
     birth_date = Column(Date, nullable=True)
     course = Column(String, nullable=True)
+    level = Column(String, nullable=True)  # exists since supabase/migrations/001
+    # Permanent teacher (migration 012). Not part of StudentResponse: admin answers stay unchanged.
+    teacher_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     notes = Column(Text, nullable=True)
     balance = Column(Numeric(10, 2), nullable=False, default=0)
     lesson_price = Column(Numeric(10, 2), nullable=False)

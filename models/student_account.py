@@ -16,6 +16,8 @@ class StudentAccount(Base):
     student_id = Column(UUID(as_uuid=True), ForeignKey("students.id", ondelete="CASCADE"), nullable=False, unique=True)
     login = Column(String, nullable=False, unique=True)
     password_hash = Column(String, nullable=False)
+    # Migration 013: the same password encrypted with STUDENT_PASSWORD_KEY (Fernet), for viewing.
+    password_enc = Column(String, nullable=True)
     failed_attempts = Column(Integer, nullable=False, default=0)
     locked_until = Column(DateTime(timezone=True), nullable=True)
     last_login_at = Column(DateTime(timezone=True), nullable=True)

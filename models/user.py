@@ -1,5 +1,5 @@
 from sqlalchemy import Column, String, Boolean, Enum as SAEnum
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import ARRAY, ENUM, UUID
 from sqlalchemy.sql import func
 from sqlalchemy import DateTime
 import uuid
@@ -13,6 +13,13 @@ class User(Base):
     email = Column(String, unique=True, nullable=False)
     password_hash = Column(String, nullable=False)
     role = Column(SAEnum("admin", "teacher", "parent", "student", "methodist", name="user_role"), default="admin")
+    # Set of roles (migration 013). The server reads this one (core.access.roles_of); empty -> [role].
+    roles = Column(
+        ARRAY(ENUM("admin", "teacher", "parent", "student", "methodist", name="user_role", create_type=False)),
+        nullable=False,
+        default=list,
+        server_default="{}",
+    )
     full_name = Column(String, nullable=False)
     phone = Column(String)
     is_active = Column(Boolean, default=True)

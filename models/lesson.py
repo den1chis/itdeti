@@ -23,5 +23,8 @@ class Lesson(Base):
     balance_deducted = Column(Boolean, nullable=False, default=False)
     schedule_slot_id = Column(UUID(as_uuid=True), ForeignKey("student_schedule.id", ondelete="SET NULL"), nullable=True, index=True)
     original_start_time = Column(DateTime(timezone=True), nullable=True)
+    # Migration 013: substitute for one future lesson, or the actual teacher of a held lesson.
+    # NULL = the student's permanent teacher (students.teacher_id).
+    teacher_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
