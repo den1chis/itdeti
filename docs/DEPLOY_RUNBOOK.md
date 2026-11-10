@@ -93,7 +93,7 @@ Render → сервис `itdeti` → **Environment**.
 Остальные переменные (`DATABASE_URL`, `JWT_SECRET_KEY` и т. д.) уже есть — не трогать.
 
 Также проверить: Render → сервис → **Settings → Build & Deploy → Docker Command / Start Command** — поле должно быть **пустым**
-(тогда используется команда из `Dockerfile`: `uvicorn main:app --host 0.0.0.0 --port 8000`). Если там своя команда — записать её;
+(тогда используется команда из `Dockerfile`: `uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}` — порт из переменной `PORT`, которую задаёт Render, без `--reload`). Если там своя команда — записать её;
 `--proxy-headers --forwarded-allow-ips='*'` там быть **не должно** (подделка IP).
 
 Сохранить переменные: **Save Changes** (Render может предложить «Save, rebuild and deploy» — можно, код пока старый; новые переменные он просто не читает).
