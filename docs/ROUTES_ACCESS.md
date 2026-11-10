@@ -1,12 +1,12 @@
 # Маршруты API и классы доступа
 
-Состояние после ночи 2 (ветка `lms-mvp`). Таблица сгенерирована: `python scripts/routes_inventory.py --before <снимок до ночи 2>`; колонка «Before night 2» — защита на начало ночи 2, «Access» — класс доступа сейчас.
+Состояние после ночи 3 (ветка `lms-mvp`; в ночь 3 маршруты не добавлялись, изменилась только документация FastAPI: `/docs`, `/redoc`, `/openapi.json` есть только при `ENABLE_DOCS=true`, иначе 404). Таблица сгенерирована: `python scripts/routes_inventory.py --before <снимок до ночи 2>`; колонка «Before night 2» — защита на начало ночи 2, «Access» — класс доступа сейчас.
 
 ## Классы доступа (`core/access.py`)
 
 | Класс | Кто проходит | Как задан |
 |---|---|---|
-| `public` | все, без входа | явный список `PUBLIC_ROUTES` (`/health`, `/auth/login`, `/auth/refresh`, `/auth/logout`, `/student/auth/login`, документация FastAPI) |
+| `public` | все, без входа | явный список `PUBLIC_ROUTES` (`/health`, `/auth/login`, `/auth/refresh`, `/auth/logout`, `/student/auth/login`, документация FastAPI — только при `ENABLE_DOCS=true`) |
 | `student` | только токен ученического сайта | зависимость `get_current_student` |
 | `admin` | только роль `admin` | `require_admin` (у старых роутеров — на уровне роутера) |
 | `roles: admin, teacher, methodist` | любой сотрудник | `require_staff` |
@@ -35,10 +35,10 @@
 | events | DELETE | `/events/{event_id}` | role in admin/teacher | admin |
 | events | GET | `/events/{event_id}` | any CRM user | admin |
 | events | PATCH | `/events/{event_id}` | role in admin/teacher | admin |
-| fastapi (docs) | GET | `/docs` | public (docs) | public |
-| fastapi (docs) | GET | `/docs/oauth2-redirect` | public (docs) | public |
-| fastapi (docs) | GET | `/openapi.json` | public (docs) | public |
-| fastapi (docs) | GET | `/redoc` | public (docs) | public |
+| fastapi (docs) | GET | `/docs` | public (docs) | public, only with ENABLE_DOCS=true (404 otherwise) |
+| fastapi (docs) | GET | `/docs/oauth2-redirect` | public (docs) | public, only with ENABLE_DOCS=true (404 otherwise) |
+| fastapi (docs) | GET | `/openapi.json` | public (docs) | public, only with ENABLE_DOCS=true (404 otherwise) |
+| fastapi (docs) | GET | `/redoc` | public (docs) | public, only with ENABLE_DOCS=true (404 otherwise) |
 | finance | GET | `/finance/expenses` | any CRM user | admin |
 | finance | POST | `/finance/expenses` | role in admin/teacher | admin |
 | finance | DELETE | `/finance/expenses/{expense_id}` | role in admin/teacher | admin |
