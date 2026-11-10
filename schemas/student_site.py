@@ -123,7 +123,14 @@ class AccessStatus(BaseModel):
 
 
 class AccessCredentials(AccessStatus):
-    # The plain password is returned only in this response, exactly once; the DB keeps only the hash.
+    # The plain password, right after create / reset. Night 2: it can also be viewed later
+    # (GET /students/{id}/access/password), it is stored encrypted next to the bcrypt hash.
+    password: str
+
+
+class AccessPassword(BaseModel):
+    student_id: uuid.UUID
+    login: str
     password: str
 
 

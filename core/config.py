@@ -27,6 +27,8 @@ class Settings(BaseSettings):
     STUDENT_TOKEN_EXPIRE_MINUTES: int = 120
     # Extra CORS origins (comma separated) on top of the built-in local student-site addresses.
     CORS_EXTRA_ORIGINS: str = ""
+    # Fernet key for viewable student passwords (core/student_secrets.py). Empty -> viewing is switched off.
+    STUDENT_PASSWORD_KEY: Optional[str] = None
 
 
 @lru_cache
