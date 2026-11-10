@@ -1,12 +1,4 @@
-# Local development / tests (not needed on Render).
+# Local development / tests (not needed on Render). Install after requirements.txt:
+#   pip install -r requirements.txt -r requirements-dev.txt
+# requirements.txt installs on Python 3.12 (Docker) and 3.13 (local Windows) since night 3 part 2.
 pytest==8.3.3
-# Windows has no system time-zone database; routers/finance.py needs ZoneInfo("Asia/Almaty").
-tzdata
-#
-# Python 3.13 locally: three pins in requirements.txt have no 3.13 wheels or do not import on 3.13
-# (pydantic-core 2.18, asyncpg 0.29, SQLAlchemy 2.0.30). Install them over requirements.txt:
-#   pip install -r requirements.txt   (fails on 3.13 -> use the line below instead)
-#   pip install fastapi==0.111.0 "uvicorn[standard]==0.29.0" "sqlalchemy[asyncio]==2.0.36" asyncpg==0.30.0 \
-#       pydantic==2.9.2 pydantic-settings==2.2.1 "python-jose[cryptography]==3.3.0" bcrypt==4.1.3 \
-#       python-multipart==0.0.9 httpx==0.27.0 anthropic==0.26.1 python-dotenv==1.0.1 alembic==1.13.1 email-validator
-# The Docker image (Python 3.12) keeps using requirements.txt unchanged.
