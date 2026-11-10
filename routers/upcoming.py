@@ -6,13 +6,15 @@ from sqlalchemy import select
 from pydantic import BaseModel
 from core.database import get_db
 from core.dependencies import get_current_user
+from core.access import require_admin
 from models.lesson import Lesson
 from models.schedule import Event
 from models.student import Student
 from models.user import User
 import uuid
 
-router = APIRouter(tags=["schedule"])
+# Night 2 access model: the whole router is admin only (core.access).
+router = APIRouter(tags=["schedule"], dependencies=[Depends(require_admin)])
 
 
 class UpcomingItem(BaseModel):

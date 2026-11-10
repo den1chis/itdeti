@@ -82,3 +82,7 @@ async def get_current_student(
     if not row or not row[1] or not row[2]:
         raise _unauthorized("Доступ выключен. Обратитесь к преподавателю.")
     return CurrentStudent(student_id=student_id, full_name=row[0])
+
+
+# Access class of every student-site route (see core.access): a student token, nothing else.
+get_current_student.__access_class__ = "student"

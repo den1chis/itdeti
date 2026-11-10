@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from core.database import get_db
 from core.security import verify_password, hash_password, create_access_token, create_refresh_token, decode_token
 from core.dependencies import get_current_user
+from core.access import require_staff
 from core.config import settings
 from models.user import User
 from schemas.auth import LoginRequest, TokenResponse, RefreshRequest, UserResponse
@@ -87,7 +88,7 @@ async def logout(payload: RefreshRequest, db: AsyncSession = Depends(get_db)):
     return {"detail": "Logged out"}
 
 
-@router.get("/me", response_model=UserResponse)
+@router.get("/me", response_model=UserResponse, dependencies=[Depends(require_staff)])
 async def me(current_user: User = Depends(get_current_user)):
     return current_user
 

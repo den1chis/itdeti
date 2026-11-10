@@ -12,13 +12,15 @@ from sqlalchemy.exc import IntegrityError
 
 from core.database import get_db
 from core.dependencies import teacher_or_admin
+from core.access import require_admin
 from models.lesson import Lesson
 from models.schedule import Event
 from models.student import Student
 from models.user import User
 from schemas.schedule import LessonResponse
 
-router = APIRouter(prefix="/manual-lessons", tags=["manual-lessons"])
+# Night 2 access model: the whole router is admin only (core.access).
+router = APIRouter(prefix="/manual-lessons", tags=["manual-lessons"], dependencies=[Depends(require_admin)])
 LOCAL_TZ = ZoneInfo("Asia/Almaty")
 
 

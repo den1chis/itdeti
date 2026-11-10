@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
 from core.dependencies import teacher_or_admin
+from core.access import require_admin
 from core.task_recurrence import Override, build_feed, is_valid_occurrence, next_occurrence, single_item
 from models.tasks import Task, TaskOccurrence, TaskProject
 from schemas.tasks import (
@@ -29,7 +30,8 @@ from schemas.tasks import (
     TaskUpdate,
 )
 
-router = APIRouter(prefix="/tasks", tags=["tasks"], dependencies=[Depends(teacher_or_admin)])
+# Night 2 access model: the whole router is admin only (core.access).
+router = APIRouter(prefix="/tasks", tags=["tasks"], dependencies=[Depends(require_admin), Depends(teacher_or_admin)])
 LOCAL_TZ = ZoneInfo("Asia/Almaty")
 MAX_RANGE_DAYS = 120
 KEEP_DONE_HOURS = 36  # the UI hides done tasks after the local day ends; the server just keeps a margin

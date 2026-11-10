@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 
 from core.database import get_db
 from core.dependencies import get_current_user, teacher_or_admin
+from core.access import require_admin
 from core.lesson_service import complete_overdue_lessons
 from models.lesson import Lesson
 from models.schedule import Event, StudentScheduleSlot
@@ -18,7 +19,8 @@ from models.student import Student
 from models.user import User
 from schemas.schedule import LessonCreate, LessonResponse, LessonUpdate, ScheduleItem
 
-router = APIRouter(tags=["lessons", "schedule"])
+# Night 2 access model: the whole router is admin only (core.access).
+router = APIRouter(tags=["lessons", "schedule"], dependencies=[Depends(require_admin)])
 LOCAL_TZ = ZoneInfo("Asia/Almaty")
 DEFAULT_LESSON_COLOR = "#4f46e5"
 
