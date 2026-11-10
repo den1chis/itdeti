@@ -118,7 +118,7 @@
 | `STUDENT_PASSWORD_KEY` | **сгенерировать** новый (команда в runbook, шаг 4), копия — в менеджер паролей | просмотр паролей учеников |
 | `BEHIND_PROXY` | `true` | лимит входа учеников по реальному IP, а не по адресу прокси |
 | `TRUSTED_PROXY_HOPS` | `1`, затем проверить (runbook, шаг 9 п. 4); при общей «корзине» — `2` | сколько прокси дописывают адрес в `X-Forwarded-For` |
-| `APP_ENV` | `production` | не `development` (иначе `create_all` на старте); если не задана — в коде по умолчанию `development`, поэтому задать обязательно |
+| `APP_ENV` | `production` (с части 2 это и значение по умолчанию) | ни в коем случае не `development` (иначе `create_all` на старте) |
 | `ENABLE_DOCS` | **не задавать** | `/docs`, `/openapi.json` закрыты (404) |
 | `CORS_ORIGINS` | не задавать (значение по умолчанию подходит) | разрешённые сайты |
 | `CORS_EXTRA_ORIGINS` | не задавать; позже — свой домен ученического сайта | добавочные сайты |
@@ -141,7 +141,7 @@
 2. **С какого адреса Android WebView грузит CRM?** Если не с `https://den1chis.github.io` — назовите адрес, добавлю в список CORS.
 3. **Платный тариф Render** (без засыпания) — нужен ли к тесту с учениками?
 4. Расхождения прод-схемы `lms_*` с миграцией 008 (если preflight их покажет, как на dev): чинить отдельной миграцией (каскады, UNIQUE, индексы)?
-5. `APP_ENV` по умолчанию в коде — `development` (опасное значение). Сменить значение по умолчанию на безопасное отдельным изменением?
+5. ~~`APP_ENV` по умолчанию в коде — `development`~~ — сделано в части 2: по умолчанию `production`.
 
 ## 8. Противоречия ТЗ и заметок
 1. ТЗ (п. 4.1): «SQL-запрос из заметок для выгрузки JSON» — в папке `context/` такого запроса нет. Написан и проверен на dev свой (`scripts/prod_backup.sql`).
@@ -154,8 +154,8 @@
 1. **Общая origin `den1chis.github.io`**: CRM хранит свои токены в `localStorage`; любая XSS на ученическом сайте (или другом сайте на этом же адресе) дала бы доступ к токенам CRM. Сайт усилен (CSP, `textContent`, свои ключи), но полностью это решает отдельный домен/поддомен для ученического сайта.
 2. CSP через `<meta>` не может задать `frame-ancestors` (защиту от встраивания сайта в чужую страницу); GitHub Pages не даёт ставить заголовки.
 3. Dev-схема `lms_*` расходится с 008 (нет каскадов, UNIQUE, индексов; лишние колонки от 009) — проверено запросами preflight на dev.
-4. Значение по умолчанию `APP_ENV="development"` в `core/config.py`: если переменная на Render не задана, сервер на старте выполнит `create_all`.
-5. Прод собирается в Docker на Python 3.12 с `requirements.txt` (`pydantic 2.7.1`, `SQLAlchemy 2.0.30`), а тесты идут локально на Python 3.13 с `pydantic 2.9.2`, `SQLAlchemy 2.0.36`. Новые конструкции (`field_validator`, `model_fields`) есть в обеих версиях, но Docker-образ этой ночью не собирался и не запускался.
+4. ~~Значение по умолчанию `APP_ENV="development"`~~ — исправлено в части 2 (по умолчанию `production`).
+5. ~~Версии `requirements.txt` отличались от версий тестов~~ — выровнены в части 2. Docker-образ не собирался (Docker на машине нет), см. часть 2.
 6. Ограничитель входа учеников — в памяти одного процесса (сбрасывается при перезапуске/засыпании Render).
 7. В `itdetiWeb/index.html` подпись «API: https://itdeti.onrender.com» статична и не меняется при локальном переопределении (только текст).
 8. Остаются в силе из ночей 1–2: вход в CRM без ограничения частоты и блокировки (решено делать до первого преподавателя), refresh-токены CRM в базе открытым текстом, `423 locked` раскрывает существование логина ученика, побочные действия GET-маршрутов календаря.
@@ -164,3 +164,47 @@
 - Всё из «ВНЕ рамок» ТЗ: раздел «Сотрудники» и экраны преподавателя, общий вход и режим сотрудника на ученическом сайте, блокировка входа в CRM и журнал, ДЗ, Pyodide, ✎ методиста, дизайн, зарплата, действия с продом, `push`/`merge`.
 - Не проверено: Android-приложение и WebView, настоящая Google-презентация во встраивании, сообщения 409/503 в CRM в браузере, сборка Docker-образа, поведение `X-Forwarded-For` на Render.
 - Миграции к проду не применялись; репозиторий `itdetiLearn` на GitHub не создавался.
+
+---
+
+# Часть 2 (2026-11-11, 00:40–01:10)
+Те же правила: только `lms-mvp` и dev-база, без push, merge и действий с продом.
+
+## Коммиты (`itdeti`, `lms-mvp`, поверх `4dae4d0`) и этот раздел
+- `fb31e6e` `requirements.txt`: версии, на которых идут тесты; явные `cryptography`, `email-validator`, `greenlet`, `tzdata`
+- `6b16761` `APP_ENV` по умолчанию `production`; README, `.env.example`, runbook; тест
+- `fb29f08` Dockerfile: порт из `$PORT`, `exec uvicorn`, без `--reload`; `.dockerignore`
+- (последний) этот раздел отчёта
+
+## 1. `requirements.txt`
+- Сторонние импорты кода (разбор `ast` всех `.py`, кроме `.venv`): `asyncpg`, `bcrypt`, `cryptography`, `dotenv`, `fastapi`, `jose`, `pydantic`, `pydantic_settings`, `sqlalchemy`, `starlette`, `uvicorn` (+ `pytest` в тестах). Косвенно нужны: `email-validator` (`EmailStr` в схемах), `greenlet` (асинхронный SQLAlchemy), `tzdata` (`ZoneInfo("Asia/Almaty")`), `httpx` (TestClient, anthropic).
+- Было → стало: `pydantic 2.7.1 → 2.9.2`, `SQLAlchemy 2.0.30 → 2.0.36`, `asyncpg 0.29.0 → 0.30.0`; добавлены явно `starlette==0.37.2`, `greenlet==3.5.6`, `email-validator==2.3.0`, `cryptography==50.0.2`, `tzdata==2026.6`. Без изменений: `fastapi 0.111.0`, `uvicorn[standard] 0.29.0`, `pydantic-settings 2.2.1`, `python-jose[cryptography] 3.3.0`, `bcrypt 4.1.3`, `python-multipart 0.0.9`, `httpx 0.27.0`, `python-dotenv 1.0.1`, `anthropic 0.26.1`, `alembic 1.13.1`. Все версии — ровно те, что стоят в `.venv`, на котором прошли тесты.
+- `anthropic`, `alembic`, `python-multipart` кодом сейчас не импортируются; оставлены, как были.
+- **Проверка для Python 3.12**: `pip install --dry-run --python-version 3.12 --platform manylinux…x86_64 --only-binary=:all: -r requirements.txt` — зависимости разрешились, все пакеты есть готовыми колёсами для CPython 3.12 Linux (сборка из исходников не нужна; например `asyncpg-0.30.0-cp312-…manylinux_2_17`, `pydantic_core-2.23.4-cp312-…manylinux_2_17`, `cryptography-50.0.2-cp311-abi3-manylinux_2_28`). Сама установка на 3.12 не выполнялась (Python 3.12 на машине нет).
+- `requirements-dev.txt` теперь только `pytest`: обходной рецепт для 3.13 больше не нужен (`tzdata` переехал в `requirements.txt`).
+
+## 2. Синтаксис как Python 3.12
+`ast.parse(..., feature_version=(3, 12))` по всем `.py`: `itdeti` — 72 файла, `itdetiWeb/tools` — 2 файла; **ошибок 0**. (Проверка ловит синтаксис новее 3.12, но не использование функций стандартной библиотеки, появившихся в 3.13.)
+
+## 3. `APP_ENV` по умолчанию `production`
+- `core/config.py`: `APP_ENV: str = "production"`. Только явное значение `development` включает `create_all` на старте и вывод всех SQL в лог. Локальный `.env` по-прежнему `APP_ENV=dev` (проверено: `/health` → `"env":"dev"`).
+- Dev-скрипты (`seed_dev.py`, `apply_migration.py`, `demo_roles.py`) при `APP_ENV=production` отказываются работать, как и раньше; без `APP_ENV` в `.env` они теперь тоже откажутся (безопаснее).
+- README, `.env.example`, runbook (таблица переменных Render) обновлены; тест `test_app_env_defaults_to_production`.
+
+## 4. Dockerfile
+- Было: `python:3.12-slim`, без `--reload`, порт жёстко `8000`.
+- Стало: тот же `python:3.12-slim`, без `--reload`, `CMD ["sh", "-c", "exec uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]` (порт из `PORT`, который задаёт Render, иначе 8000; `exec` — uvicorn получает SIGTERM при передеплое), `PYTHONDONTWRITEBYTECODE=1`, `PYTHONUNBUFFERED=1`. Без `--proxy-headers`.
+- Новый `.dockerignore`: `.env`, `.venv/`, `.git/`, `__pycache__/`, `*.pyc`, `.pytest_cache/`, `*.log` — при локальной сборке секреты и окружение не попадут в образ (Render собирает из git, где `.env` нет).
+- **Docker на машине не установлен** (`docker: command not found`), образ не собирался и не запускался; устанавливать не стал.
+- Замена проверки: та же команда запуска, что в `CMD`, локально (Python 3.13, dev-база):
+  - `PORT=8011` → uvicorn слушает `8011`, `/health` → `{"status":"ok","env":"dev"}`, `/docs` → 200 (в dev `.env` `ENABLE_DOCS=true`), ошибок в логе нет;
+  - `PORT=8012 APP_ENV=production ENABLE_DOCS=false` → `/health` → `{"status":"ok","env":"production"}`, `/docs`, `/redoc`, `/openapi.json` → 404.
+  - Подстановка `${PORT:-8000}` в `sh`: без `PORT` → 8000, `PORT=10000` → 10000.
+  Оба временных сервера остановлены.
+
+## 5. Тесты и импорт
+- Импорт приложения: `import main` — без ошибок; 138 маршрутов (134 API + 4 документации, т. к. в dev `ENABLE_DOCS=true`), неразмеченных маршрутов 0; CORS — 5 адресов по умолчанию.
+- Быстрые тесты `pytest -k "not route_matrix"`: **101 passed, 1 deselected (матрица маршрутов), 0 failed, 746,9 с (12 мин 26 с)**, 2026-11-11 00:55:07 → 01:07:35, dev-база. Всего тестов теперь 102 (+1 тест `APP_ENV`). Матрица маршрутов в части 2 не перезапускалась (в последнем полном прогоне части 1 она прошла; маршруты в части 2 не менялись).
+
+## Что осталось непроверенным после части 2
+- Сборка и запуск Docker-образа (нет Docker) и установка `requirements.txt` на настоящем Python 3.12 — проверено только разрешение зависимостей. На Render это проверится при первом деплое (runbook, шаг 6: статус «Live» и `/health`); если сборка упадёт — Rollback (раздел 10).
