@@ -44,7 +44,7 @@ Security related variables (details in `.env.example` and `docs/DEPLOY_RUNBOOK.m
 - `ENABLE_DOCS` - `/docs`, `/redoc`, `/openapi.json` exist only with `ENABLE_DOCS=true`; leave it unset in production.
 - `CORS_ORIGINS`, `CORS_EXTRA_ORIGINS` - explicit list of allowed browser origins (default: GitHub Pages
   `https://den1chis.github.io` and the local ports 5500/5501).
-- `BEHIND_PROXY`, `TRUSTED_PROXY_HOPS` - real client IP for the student login rate limit behind Render's proxy.
+- `BEHIND_PROXY`, `TRUSTED_PROXY_HOPS` - real client IP for the login rate limits behind Render's proxy: `CF-Connecting-IP` (Cloudflare) first, then `X-Forwarded-For` (N-th from the right). Keep `BEHIND_PROXY=true` on Render.
 - `STUDENT_PASSWORD_KEY` - Fernet key for viewable student passwords.
 - `APP_ENV` - default `production` (safe: also when the variable is missing). Locally `dev`. Never `development`
   on a real database: that value runs `create_all` on start (tables without migrations and RLS) and logs every SQL query.

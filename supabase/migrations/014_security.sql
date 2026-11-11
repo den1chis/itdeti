@@ -8,7 +8,7 @@
 BEGIN;
 
 -- 1. CRM login throttling, one row per (email, client IP). Emails are stored lower(trim()).
---    failed_count      wrong passwords in a row for the pair (reset by a successful login or after 15 quiet minutes)
+--    failed_count      wrong passwords in a row for the pair (reset by a successful login and when the pair gets locked)
 --    locked_until      the pair is refused until this moment
 --    window_*          wrong passwords of the pair in the current 15-minute window (summed per email for the
 --                      distributed-guessing lock)

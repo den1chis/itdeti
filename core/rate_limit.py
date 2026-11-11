@@ -2,7 +2,8 @@
 
 Limitations (see REPORT.md): state lives in one process - it is reset on restart and is not shared
 between several workers/instances. Behind a proxy the key must come from core.client_ip.client_ip
-(BEHIND_PROXY / TRUSTED_PROXY_HOPS), otherwise every client shares the proxy address."""
+(BEHIND_PROXY: CF-Connecting-IP, then X-Forwarded-For / TRUSTED_PROXY_HOPS), otherwise every client shares
+the proxy address."""
 import time
 from collections import deque
 from typing import Deque, Dict, Optional

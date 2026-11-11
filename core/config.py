@@ -41,9 +41,11 @@ class Settings(BaseSettings):
     # Swagger / ReDoc / openapi.json are served only when this is explicitly true (not tied to APP_ENV).
     ENABLE_DOCS: bool = False
     # Client IP behind a reverse proxy (Render): true -> take the address the trusted proxy appended to
-    # X-Forwarded-For (core/client_ip.py); false -> the socket address, the header is ignored.
+    # Cloudflare's CF-Connecting-IP, else X-Forwarded-For (core/client_ip.py); false -> the socket address,
+    # every header is ignored. Must stay true on Render: false puts the whole school into one bucket.
     BEHIND_PROXY: bool = False
-    # How many trusted proxies append to X-Forwarded-For (the client address is the N-th from the right).
+    # Fallback when CF-Connecting-IP is missing: how many trusted proxies append to X-Forwarded-For
+    # (the client address is the N-th from the right).
     TRUSTED_PROXY_HOPS: int = 1
     # Fernet key for viewable student passwords (core/student_secrets.py). Empty -> viewing is switched off.
     STUDENT_PASSWORD_KEY: Optional[str] = None
