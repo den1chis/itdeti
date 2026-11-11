@@ -161,6 +161,30 @@ def test_prod_ops_cli_never_prints_the_url(tmp_path, capsys):
     assert prod_ops.main(["counts"]) == 2  # no target at all
 
 
+def test_prod_ops_encodes_special_characters_in_the_password():
+    for raw in ("Pa/ss", "Pa?ss", "Pa#ss", "P@ss/w?o#rd"):
+        dsn = prod_ops.to_dsn(f"postgresql+asyncpg://postgres.abcdefghijklmnopqrst:{raw}@db.example.com:6543/postgres")
+        parsed = __import__("urllib.parse").parse.urlparse(dsn)
+        assert parsed.hostname == "db.example.com" and parsed.port == 6543 and parsed.path == "/postgres"
+        assert __import__("urllib.parse").parse.unquote(parsed.password) == raw
+    # An already encoded password is not encoded twice.
+    assert prod_ops.to_dsn("postgresql://u:Pa%2Fss@h:5432/db") == "postgresql://u:Pa%2Fss@h:5432/db"
+    prod_ops.to_dsn("postgresql://u:SECRETX/1@h/db")       # redact() knows the passwords to_dsn() has seen
+    assert "SECRETX" not in prod_ops.redact("boom postgresql://u:SECRETX%2F1@h/db SECRETX/1")
+
+
+def test_prod_ops_connection_error_never_prints_the_password(tmp_path, capsys):
+    # 127.0.0.2:1 refuses at once; the password has every character that used to break URL parsing.
+    password = "Ab/cd?ef#gh-SECRETX"
+    url = f"postgresql://postgres.abcdefghijklmnopqrst:{password}@127.0.0.2:1/postgres"
+    code = prod_ops.main(["--prod", "--secrets", str(_secrets(tmp_path, f"PROD_DATABASE_URL={url}\n")), "counts"])
+    out = capsys.readouterr()
+    text = out.out + out.err
+    assert code == 2 and "ОШИБКА" in text
+    for piece in ("SECRETX", "Ab/cd", "Ab%2Fcd", "abcdefghijklmnopqrst"):
+        assert piece not in text
+
+
 def test_prod_ops_checks_format_and_rules():
     checks = prod_ops.parse_checks(
         "-- header\n\n-- [1] first\n-- note\n-- @expect scalar >= 2\nSELECT count(*)\nFROM t;\n\n"

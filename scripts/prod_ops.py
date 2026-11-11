@@ -39,7 +39,7 @@ import time
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import quote, unquote, urlparse
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -82,7 +82,35 @@ def to_dsn(url: str) -> str:
         url = "postgresql://" + url[len("postgres://"):]
     if not url.startswith("postgresql://"):
         raise Refused("the database URL must start with postgresql:// or postgresql+asyncpg://")
+    # Percent-encode user and password: a raw "/", "?", "#" or "@" in the password breaks URL parsing, and
+    # asyncpg then puts a piece of the password into its error text. unquote first, so an already encoded
+    # password stays the same.
+    rest = url[len("postgresql://"):]
+    userinfo, at, hostpart = rest.rpartition("@")
+    if at:
+        user, colon, password = userinfo.partition(":")
+        _remember_secret(unquote(password))
+        _remember_secret(password)
+        userinfo = quote(unquote(user), safe=".") + (":" + quote(unquote(password), safe="") if colon else "")
+        url = f"postgresql://{userinfo}@{hostpart}"
+        _remember_secret(quote(unquote(password), safe=""))
+    _remember_secret(url)
     return url
+
+
+_SECRETS: list = []
+
+
+def _remember_secret(value: str) -> None:
+    if value and len(value) >= 4 and value not in _SECRETS:
+        _SECRETS.append(value)
+
+
+def redact(text: str) -> str:
+    """Remove the database URL and the password (raw and encoded) from any text before printing it."""
+    for secret in sorted(_SECRETS, key=len, reverse=True):
+        text = text.replace(secret, "***")
+    return text
 
 
 def project_ref(dsn: str) -> str:
@@ -473,7 +501,12 @@ def main(argv=None) -> int:
     try:
         return asyncio.run(run(args))
     except Refused as refusal:
-        print(f"ОТКАЗ: {refusal}")
+        print(f"ОТКАЗ: {redact(str(refusal))}")
+        return 2
+    except Exception as error:
+        # No traceback: it could carry the URL. Only the type and a redacted message.
+        print(f"ОШИБКА: {type(error).__name__}: {redact(str(error))[:500]}")
+        print("Действие остановлено; если это ошибка подключения — проверьте сеть и PROD_DATABASE_URL в файле секретов.")
         return 2
 
 

@@ -150,7 +150,24 @@ def wait_for_version(expected: str, minutes: int = 15, want_equal: bool = True) 
 
 
 def server_smoke() -> list:
-    """Section 4 step 5. Returns the list of failed checks (empty = passed)."""
+    """Section 4 step 5. Returns the list of failed checks (empty = passed). A network error or a broken
+    answer is a failed check too (it must lead to the rollback, not to a traceback)."""
+    # The login checks use up the per-IP limit of this computer for a minute: a repeated smoke test within
+    # that minute would fail falsely (and roll the server back). Wait it out.
+    last = state().get("smoke_started_at", 0)
+    if time.time() - last < 70:
+        wait = int(70 - (time.time() - last)) + 1
+        say(f"  жду {wait} с: предыдущий смоук занял лимит входа с этого IP")
+        time.sleep(wait)
+    state(smoke_started_at=time.time())
+    try:
+        return _server_smoke()
+    except Exception as error:
+        say(f"  FAIL смоук прерван ошибкой: {type(error).__name__}: {str(error)[:300]}")
+        return [f"ошибка смоука: {type(error).__name__}"]
+
+
+def _server_smoke() -> list:
     failures, run_id = [], uuid.uuid4().hex[:8]
 
     def check(name, ok, got):
@@ -165,7 +182,11 @@ def server_smoke() -> list:
             code = client.get(API + path).status_code
             check(f"{path} -> 404", code == 404, code)
         code = client.get(f"{API}/audit").status_code
-        check("GET /audit без токена -> 401/403", code in (401, 403), code)
+        # Without an Authorization header FastAPI's HTTPBearer answers 403 on every CRM route (unchanged
+        # behaviour); with a bad token it is 401. Both mean "no access" — the point is: not 200.
+        check("GET /audit без токена -> 401/403 (без доступа)", code in (401, 403), code)
+        code = client.get(f"{API}/audit", headers={"Authorization": "Bearer not-a-token"}).status_code
+        check("GET /audit с неверным токеном -> 401", code == 401, code)
 
         # CORS: allowed origin gets the header, a foreign one does not.
         preflight = {"Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "authorization,content-type"}
@@ -314,6 +335,21 @@ def main() -> int:
     NO_AUTO_REVERT = args.no_auto_revert
     if not args.prod:
         say("ОТКАЗ: это выкладка на прод; запускать с флагом --prod")
+        return 2
+    # Before anything touches production: all three repositories clean and on lms-mvp (otherwise the run
+    # would stop half way, e.g. a new server with the old CRM).
+    problems = []
+    for repo in ("itdeti", "itdetiWeb", "itdetiLearn"):
+        cwd = WORKSPACE / repo
+        try:
+            if sh(["git", "status", "--porcelain"], cwd):
+                problems.append(f"{repo}: есть незакоммиченные изменения")
+            if sh(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd) != "lms-mvp":
+                problems.append(f"{repo}: текущая ветка не lms-mvp")
+        except Stop as stop:
+            problems.append(f"{repo}: {stop}")
+    if problems:
+        say("ОТКАЗ до начала выкладки:\n  " + "\n  ".join(problems))
         return 2
     for number, title, fn in STEPS:
         if (args.only_step and number != args.only_step) or (not args.only_step and number < args.from_step):

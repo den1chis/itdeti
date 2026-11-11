@@ -1,4 +1,4 @@
-# Выкладка ночи 4 на прод одной командой (PowerShell 5). Запускать из любой папки:
+﻿# Выкладка ночи 4 на прод одной командой (PowerShell 5). Запускать из любой папки:
 #     powershell -ExecutionPolicy Bypass -File D:\itdeti_learn\itdeti\scripts\deploy_night4.ps1
 # Продолжить после остановки с шага N:
 #     powershell -ExecutionPolicy Bypass -File D:\itdeti_learn\itdeti\scripts\deploy_night4.ps1 -FromStep N
