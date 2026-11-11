@@ -12,13 +12,15 @@ from sqlalchemy.exc import IntegrityError
 
 from core.database import get_db
 from core.dependencies import teacher_or_admin
+from core.access import require_admin
 from models.lesson import Lesson
 from models.schedule import Event
 from models.student import Student
 from models.user import User
 from schemas.schedule import LessonResponse
 
-router = APIRouter(prefix="/manual-lessons", tags=["manual-lessons"])
+# Night 2 access model: the whole router is admin only (core.access).
+router = APIRouter(prefix="/manual-lessons", tags=["manual-lessons"], dependencies=[Depends(require_admin)])
 LOCAL_TZ = ZoneInfo("Asia/Almaty")
 
 
@@ -111,6 +113,7 @@ async def create_manual_lesson(
         balance_deducted=payload.lesson_type != "trial",
         schedule_slot_id=None,
         original_start_time=start,
+        teacher_id=student.teacher_id,  # night 2: actual teacher of the held lesson
     )
     db.add(lesson)
     if payload.lesson_type != "trial":

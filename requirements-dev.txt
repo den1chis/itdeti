@@ -1,0 +1,4 @@
+# Local development / tests (not needed on Render). Install after requirements.txt:
+#   pip install -r requirements.txt -r requirements-dev.txt
+# requirements.txt installs on Python 3.12 (Docker) and 3.13 (local Windows) since night 3 part 2.
+pytest==8.3.3

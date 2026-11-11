@@ -10,10 +10,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
 from core.dependencies import get_current_user, teacher_or_admin
+from core.access import require_admin
 from models.notification import Notification
 from models.user import User
 
-router = APIRouter(prefix="/notifications", tags=["notifications"])
+# Night 2 access model: the whole router is admin only (core.access).
+router = APIRouter(prefix="/notifications", tags=["notifications"], dependencies=[Depends(require_admin)])
 
 
 class NotificationIn(BaseModel):

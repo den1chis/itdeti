@@ -8,12 +8,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
 from core.dependencies import get_current_user, teacher_or_admin
+from core.access import require_admin
 from models.lesson import Lesson
 from models.schedule import Event
 from models.user import User
 from schemas.schedule import EventCreate, EventResponse, EventUpdate
 
-router = APIRouter(tags=["events"])
+# Night 2 access model: the whole router is admin only (core.access).
+router = APIRouter(tags=["events"], dependencies=[Depends(require_admin)])
 
 
 @router.post("/events", response_model=EventResponse, status_code=201)

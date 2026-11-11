@@ -32,6 +32,10 @@ async def complete_overdue_lessons(db: AsyncSession) -> int:
     for lesson, event, student in result.all():
         lesson.status = "completed"
         lesson.is_attended = True
+        # Night 2: the actual teacher of a held lesson is fixed in the lesson (basis for salary later).
+        # Only fills an empty value; does not touch the deduction below.
+        if lesson.teacher_id is None:
+            lesson.teacher_id = student.teacher_id
 
         if lesson.lesson_type != "trial" and not lesson.balance_deducted:
             student.balance = (

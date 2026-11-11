@@ -13,7 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
 from core.course_sync import LessonDate, pause_student_lessons, safe_plan_dates, safe_sync_course, safe_sync_student
-from core.dependencies import teacher_or_admin
+from core.access import owned_student_ids, require_admin, require_catalog_editor, require_staff, require_teacher, student_or_404
+from models.user import User
 from core.lms_utils import get_embed_url
 from models.lms import (
     LmsCourse,
@@ -61,7 +62,11 @@ from schemas.lms import (
     TaskUpdate,
 )
 
-router = APIRouter(prefix="/lms", tags=["lms"], dependencies=[Depends(teacher_or_admin)])
+# Night 2 access model (core.access), every route carries its own access class:
+#   catalog read  -> admin, teacher, methodist      catalog write -> admin, methodist
+#   /students/{id}/... read, notes -> admin, teacher (own students only; foreign -> 404)
+#   any write on a student's course/status/progress -> admin only
+router = APIRouter(prefix="/lms", tags=["lms"])
 
 
 # ---------------------------------------------------------------- helpers
@@ -301,7 +306,7 @@ def _check_material_content(material: LmsMaterial) -> None:
 
 
 # ---------------------------------------------------------------- courses
-@router.get("/courses", response_model=List[CourseResponse])
+@router.get("/courses", response_model=List[CourseResponse], dependencies=[Depends(require_staff)])
 async def list_courses(include_archived: bool = False, db: AsyncSession = Depends(get_db)):
     query = select(LmsCourse).order_by(LmsCourse.sort_order, LmsCourse.created_at)
     if not include_archived:
@@ -311,7 +316,7 @@ async def list_courses(include_archived: bool = False, db: AsyncSession = Depend
     return [_course_response(course, counts) for course in courses]
 
 
-@router.post("/courses", response_model=CourseResponse, status_code=201)
+@router.post("/courses", response_model=CourseResponse, status_code=201, dependencies=[Depends(require_catalog_editor)])
 async def create_course(payload: CourseCreate, db: AsyncSession = Depends(get_db)):
     course = LmsCourse(**payload.model_dump(), sort_order=await _next_order(db, LmsCourse))
     db.add(course)
@@ -320,7 +325,7 @@ async def create_course(payload: CourseCreate, db: AsyncSession = Depends(get_db
     return _course_response(course, {})
 
 
-@router.get("/courses/{course_id}", response_model=CourseTree)
+@router.get("/courses/{course_id}", response_model=CourseTree, dependencies=[Depends(require_staff)])
 async def get_course(course_id: UUID, db: AsyncSession = Depends(get_db)):
     course = await _get_course(db, course_id)
     modules = await _build_tree(db, course.id)
@@ -328,7 +333,7 @@ async def get_course(course_id: UUID, db: AsyncSession = Depends(get_db)):
     return CourseTree(**base.model_dump(), modules=modules)
 
 
-@router.patch("/courses/{course_id}", response_model=CourseResponse)
+@router.patch("/courses/{course_id}", response_model=CourseResponse, dependencies=[Depends(require_catalog_editor)])
 async def update_course(course_id: UUID, payload: CourseUpdate, db: AsyncSession = Depends(get_db)):
     course = await _get_course(db, course_id)
     old_title = course.title
@@ -344,7 +349,7 @@ async def update_course(course_id: UUID, payload: CourseUpdate, db: AsyncSession
     return _course_response(course, await _course_counts(db, [course.id]))
 
 
-@router.delete("/courses/{course_id}", status_code=204)
+@router.delete("/courses/{course_id}", status_code=204, dependencies=[Depends(require_catalog_editor)])
 async def delete_course(course_id: UUID, db: AsyncSession = Depends(get_db)):
     course = await _get_course(db, course_id)
     enrolled = await db.scalar(select(func.count()).select_from(LmsEnrollment).where(LmsEnrollment.course_id == course_id))
@@ -355,7 +360,7 @@ async def delete_course(course_id: UUID, db: AsyncSession = Depends(get_db)):
 
 
 # ---------------------------------------------------------------- modules
-@router.post("/courses/{course_id}/modules", response_model=ModuleResponse, status_code=201)
+@router.post("/courses/{course_id}/modules", response_model=ModuleResponse, status_code=201, dependencies=[Depends(require_catalog_editor)])
 async def create_module(course_id: UUID, payload: ModuleCreate, db: AsyncSession = Depends(get_db)):
     await _get_course(db, course_id)
     module = LmsModule(course_id=course_id, sort_order=await _next_order(db, LmsModule, LmsModule.course_id, course_id), **payload.model_dump())
@@ -365,14 +370,14 @@ async def create_module(course_id: UUID, payload: ModuleCreate, db: AsyncSession
     return module
 
 
-@router.post("/courses/{course_id}/modules/reorder", status_code=204)
+@router.post("/courses/{course_id}/modules/reorder", status_code=204, dependencies=[Depends(require_catalog_editor)])
 async def reorder_modules(course_id: UUID, payload: ReorderRequest, db: AsyncSession = Depends(get_db)):
     await _get_course(db, course_id)
     await _reorder(db, LmsModule, LmsModule.course_id, course_id, payload.ids)
     await db.commit()
 
 
-@router.patch("/modules/{module_id}", response_model=ModuleResponse)
+@router.patch("/modules/{module_id}", response_model=ModuleResponse, dependencies=[Depends(require_catalog_editor)])
 async def update_module(module_id: UUID, payload: ModuleUpdate, db: AsyncSession = Depends(get_db)):
     module = await _get_module(db, module_id)
     _apply_changes(module, payload.model_dump(exclude_unset=True), {"title", "sort_order"})
@@ -381,7 +386,7 @@ async def update_module(module_id: UUID, payload: ModuleUpdate, db: AsyncSession
     return module
 
 
-@router.delete("/modules/{module_id}", status_code=204)
+@router.delete("/modules/{module_id}", status_code=204, dependencies=[Depends(require_catalog_editor)])
 async def delete_module(module_id: UUID, db: AsyncSession = Depends(get_db)):
     module = await _get_module(db, module_id)
     course_id = module.course_id
@@ -392,7 +397,7 @@ async def delete_module(module_id: UUID, db: AsyncSession = Depends(get_db)):
 
 
 # ---------------------------------------------------------------- lessons
-@router.post("/modules/{module_id}/lessons", response_model=LessonResponse, status_code=201)
+@router.post("/modules/{module_id}/lessons", response_model=LessonResponse, status_code=201, dependencies=[Depends(require_catalog_editor)])
 async def create_lesson(module_id: UUID, payload: LessonCreate, db: AsyncSession = Depends(get_db)):
     module = await _get_module(db, module_id)
     lesson = LmsLesson(module_id=module_id, sort_order=await _next_order(db, LmsLesson, LmsLesson.module_id, module_id), **payload.model_dump())
@@ -404,14 +409,14 @@ async def create_lesson(module_id: UUID, payload: LessonCreate, db: AsyncSession
     return lesson
 
 
-@router.post("/modules/{module_id}/lessons/reorder", status_code=204)
+@router.post("/modules/{module_id}/lessons/reorder", status_code=204, dependencies=[Depends(require_catalog_editor)])
 async def reorder_lessons(module_id: UUID, payload: ReorderRequest, db: AsyncSession = Depends(get_db)):
     await _get_module(db, module_id)
     await _reorder(db, LmsLesson, LmsLesson.module_id, module_id, payload.ids)
     await db.commit()
 
 
-@router.get("/lessons/{lesson_id}", response_model=LessonDetail)
+@router.get("/lessons/{lesson_id}", response_model=LessonDetail, dependencies=[Depends(require_staff)])
 async def get_lesson(lesson_id: UUID, db: AsyncSession = Depends(get_db)):
     lesson = await _get_lesson(db, lesson_id)
     module = await _get_module(db, lesson.module_id)
@@ -432,7 +437,7 @@ async def get_lesson(lesson_id: UUID, db: AsyncSession = Depends(get_db)):
     )
 
 
-@router.patch("/lessons/{lesson_id}", response_model=LessonResponse)
+@router.patch("/lessons/{lesson_id}", response_model=LessonResponse, dependencies=[Depends(require_catalog_editor)])
 async def update_lesson(lesson_id: UUID, payload: LessonUpdate, db: AsyncSession = Depends(get_db)):
     lesson = await _get_lesson(db, lesson_id)
     changes = payload.model_dump(exclude_unset=True)
@@ -451,7 +456,7 @@ async def update_lesson(lesson_id: UUID, payload: LessonUpdate, db: AsyncSession
     return lesson
 
 
-@router.delete("/lessons/{lesson_id}", status_code=204)
+@router.delete("/lessons/{lesson_id}", status_code=204, dependencies=[Depends(require_catalog_editor)])
 async def delete_lesson(lesson_id: UUID, db: AsyncSession = Depends(get_db)):
     lesson = await _get_lesson(db, lesson_id)
     module = await _get_module(db, lesson.module_id)
@@ -462,7 +467,7 @@ async def delete_lesson(lesson_id: UUID, db: AsyncSession = Depends(get_db)):
 
 
 # ---------------------------------------------------------------- materials
-@router.post("/lessons/{lesson_id}/materials", response_model=MaterialResponse, status_code=201)
+@router.post("/lessons/{lesson_id}/materials", response_model=MaterialResponse, status_code=201, dependencies=[Depends(require_catalog_editor)])
 async def create_material(lesson_id: UUID, payload: MaterialCreate, db: AsyncSession = Depends(get_db)):
     await _get_lesson(db, lesson_id)
     material = LmsMaterial(lesson_id=lesson_id, sort_order=await _next_order(db, LmsMaterial, LmsMaterial.lesson_id, lesson_id), **payload.model_dump())
@@ -473,7 +478,7 @@ async def create_material(lesson_id: UUID, payload: MaterialCreate, db: AsyncSes
     return _material_out(material)
 
 
-@router.patch("/materials/{material_id}", response_model=MaterialResponse)
+@router.patch("/materials/{material_id}", response_model=MaterialResponse, dependencies=[Depends(require_catalog_editor)])
 async def update_material(material_id: UUID, payload: MaterialUpdate, db: AsyncSession = Depends(get_db)):
     material = await db.scalar(select(LmsMaterial).where(LmsMaterial.id == material_id))
     if not material:
@@ -485,7 +490,7 @@ async def update_material(material_id: UUID, payload: MaterialUpdate, db: AsyncS
     return _material_out(material)
 
 
-@router.delete("/materials/{material_id}", status_code=204)
+@router.delete("/materials/{material_id}", status_code=204, dependencies=[Depends(require_catalog_editor)])
 async def delete_material(material_id: UUID, db: AsyncSession = Depends(get_db)):
     material = await db.scalar(select(LmsMaterial).where(LmsMaterial.id == material_id))
     if not material:
@@ -495,7 +500,7 @@ async def delete_material(material_id: UUID, db: AsyncSession = Depends(get_db))
 
 
 # ---------------------------------------------------------------- tasks
-@router.post("/lessons/{lesson_id}/tasks", response_model=TaskResponse, status_code=201)
+@router.post("/lessons/{lesson_id}/tasks", response_model=TaskResponse, status_code=201, dependencies=[Depends(require_catalog_editor)])
 async def create_task(lesson_id: UUID, payload: TaskCreate, db: AsyncSession = Depends(get_db)):
     await _get_lesson(db, lesson_id)
     task = LmsTask(lesson_id=lesson_id, sort_order=await _next_order(db, LmsTask, LmsTask.lesson_id, lesson_id), **payload.model_dump())
@@ -505,7 +510,7 @@ async def create_task(lesson_id: UUID, payload: TaskCreate, db: AsyncSession = D
     return task
 
 
-@router.patch("/tasks/{task_id}", response_model=TaskResponse)
+@router.patch("/tasks/{task_id}", response_model=TaskResponse, dependencies=[Depends(require_catalog_editor)])
 async def update_task(task_id: UUID, payload: TaskUpdate, db: AsyncSession = Depends(get_db)):
     task = await db.scalar(select(LmsTask).where(LmsTask.id == task_id))
     if not task:
@@ -516,7 +521,7 @@ async def update_task(task_id: UUID, payload: TaskUpdate, db: AsyncSession = Dep
     return task
 
 
-@router.delete("/tasks/{task_id}", status_code=204)
+@router.delete("/tasks/{task_id}", status_code=204, dependencies=[Depends(require_catalog_editor)])
 async def delete_task(task_id: UUID, db: AsyncSession = Depends(get_db)):
     task = await db.scalar(select(LmsTask).where(LmsTask.id == task_id))
     if not task:
@@ -526,9 +531,9 @@ async def delete_task(task_id: UUID, db: AsyncSession = Depends(get_db)):
 
 
 # ---------------------------------------------------------------- enrollments
-@router.get("/students/{student_id}/enrollments", response_model=List[EnrollmentResponse])
-async def list_student_enrollments(student_id: UUID, db: AsyncSession = Depends(get_db)):
-    await _get_student(db, student_id)
+@router.get("/students/{student_id}/enrollments", response_model=List[EnrollmentResponse], dependencies=[Depends(require_teacher)])
+async def list_student_enrollments(student_id: UUID, db: AsyncSession = Depends(get_db), user: User = Depends(require_teacher)):
+    await student_or_404(db, user, student_id)
     rows = await db.execute(
         select(LmsEnrollment, LmsCourse)
         .join(LmsCourse, LmsCourse.id == LmsEnrollment.course_id)
@@ -538,7 +543,7 @@ async def list_student_enrollments(student_id: UUID, db: AsyncSession = Depends(
     return [await _enrollment_response(db, enrollment, course) for enrollment, course in rows.all()]
 
 
-@router.post("/students/{student_id}/enrollments", response_model=EnrollmentResponse, status_code=201)
+@router.post("/students/{student_id}/enrollments", response_model=EnrollmentResponse, status_code=201, dependencies=[Depends(require_admin)])
 async def enroll_student(student_id: UUID, payload: EnrollmentCreate, db: AsyncSession = Depends(get_db)):
     await _get_student(db, student_id)
     course = await _get_course(db, payload.course_id)
@@ -561,7 +566,7 @@ async def enroll_student(student_id: UUID, payload: EnrollmentCreate, db: AsyncS
     return await _enrollment_response(db, enrollment, course)
 
 
-@router.put("/students/{student_id}/course", response_model=Optional[EnrollmentResponse])
+@router.put("/students/{student_id}/course", response_model=Optional[EnrollmentResponse], dependencies=[Depends(require_admin)])
 async def set_student_course(student_id: UUID, payload: StudentCourseSet, db: AsyncSession = Depends(get_db)):
     """Заменить курс ученика одним действием (для карточки ученика): прежнее назначение снимается,
     новое создаётся. course_id = null просто снимает курс. Тот же курс, что уже назначен, не пересоздаётся."""
@@ -602,7 +607,7 @@ async def set_student_course(student_id: UUID, payload: StudentCourseSet, db: As
     return await _enrollment_response(db, enrollment, course)
 
 
-@router.patch("/enrollments/{enrollment_id}", response_model=EnrollmentResponse)
+@router.patch("/enrollments/{enrollment_id}", response_model=EnrollmentResponse, dependencies=[Depends(require_admin)])
 async def update_enrollment(enrollment_id: UUID, payload: EnrollmentUpdate, db: AsyncSession = Depends(get_db)):
     enrollment = await db.scalar(select(LmsEnrollment).where(LmsEnrollment.id == enrollment_id))
     if not enrollment:
@@ -625,7 +630,7 @@ async def update_enrollment(enrollment_id: UUID, payload: EnrollmentUpdate, db: 
     return await _enrollment_response(db, enrollment, course)
 
 
-@router.delete("/enrollments/{enrollment_id}", status_code=204)
+@router.delete("/enrollments/{enrollment_id}", status_code=204, dependencies=[Depends(require_admin)])
 async def delete_enrollment(enrollment_id: UUID, db: AsyncSession = Depends(get_db)):
     """Unassign a course. The student's progress records are kept, so re-assigning restores them."""
     enrollment = await db.scalar(select(LmsEnrollment).where(LmsEnrollment.id == enrollment_id))
@@ -640,9 +645,9 @@ async def delete_enrollment(enrollment_id: UUID, db: AsyncSession = Depends(get_
 
 
 # ---------------------------------------------------------------- progress
-@router.get("/students/{student_id}/courses/{course_id}/progress", response_model=StudentCourseProgress)
-async def student_course_progress(student_id: UUID, course_id: UUID, db: AsyncSession = Depends(get_db)):
-    await _get_student(db, student_id)
+@router.get("/students/{student_id}/courses/{course_id}/progress", response_model=StudentCourseProgress, dependencies=[Depends(require_teacher)])
+async def student_course_progress(student_id: UUID, course_id: UUID, db: AsyncSession = Depends(get_db), user: User = Depends(require_teacher)):
+    await student_or_404(db, user, student_id)
     course = await _get_course(db, course_id)
     lessons = await _course_lessons_ordered(db, course_id)
     statuses = await _student_statuses(db, student_id, [lesson.id for lesson in lessons])
@@ -664,7 +669,7 @@ async def student_course_progress(student_id: UUID, course_id: UUID, db: AsyncSe
     )
 
 
-@router.put("/students/{student_id}/lessons/{lesson_id}/progress", response_model=ProgressResponse)
+@router.put("/students/{student_id}/lessons/{lesson_id}/progress", response_model=ProgressResponse, dependencies=[Depends(require_admin)])
 async def set_lesson_progress(student_id: UUID, lesson_id: UUID, payload: ProgressUpdate, db: AsyncSession = Depends(get_db)):
     await _get_student(db, student_id)
     lesson = await _get_lesson(db, lesson_id)
@@ -688,9 +693,14 @@ async def set_lesson_progress(student_id: UUID, lesson_id: UUID, payload: Progre
 
 
 # ---------------------------------------------------------------- notes (visible to teacher/admin only)
-@router.get("/students/{student_id}/notes", response_model=List[NoteResponse])
-async def list_notes(student_id: UUID, lesson_id: Optional[UUID] = None, db: AsyncSession = Depends(get_db)):
-    await _get_student(db, student_id)
+def _note_query(user: User, note_id: UUID):
+    """A note of one of the user's own students (admin: any). A foreign note is simply not found (404)."""
+    return select(LmsStudentNote).where(LmsStudentNote.id == note_id, LmsStudentNote.student_id.in_(owned_student_ids(user)))
+
+
+@router.get("/students/{student_id}/notes", response_model=List[NoteResponse], dependencies=[Depends(require_teacher)])
+async def list_notes(student_id: UUID, lesson_id: Optional[UUID] = None, db: AsyncSession = Depends(get_db), user: User = Depends(require_teacher)):
+    await student_or_404(db, user, student_id)
     query = select(LmsStudentNote).where(LmsStudentNote.student_id == student_id)
     if lesson_id:
         query = query.where(LmsStudentNote.lesson_id == lesson_id)
@@ -698,9 +708,9 @@ async def list_notes(student_id: UUID, lesson_id: Optional[UUID] = None, db: Asy
     return result.scalars().all()
 
 
-@router.post("/students/{student_id}/notes", response_model=NoteResponse, status_code=201)
-async def create_note(student_id: UUID, payload: NoteCreate, db: AsyncSession = Depends(get_db)):
-    await _get_student(db, student_id)
+@router.post("/students/{student_id}/notes", response_model=NoteResponse, status_code=201, dependencies=[Depends(require_teacher)])
+async def create_note(student_id: UUID, payload: NoteCreate, db: AsyncSession = Depends(get_db), user: User = Depends(require_teacher)):
+    await student_or_404(db, user, student_id)
     if payload.lesson_id:
         await _get_lesson(db, payload.lesson_id)
     note = LmsStudentNote(student_id=student_id, **payload.model_dump())
@@ -710,9 +720,9 @@ async def create_note(student_id: UUID, payload: NoteCreate, db: AsyncSession = 
     return note
 
 
-@router.patch("/notes/{note_id}", response_model=NoteResponse)
-async def update_note(note_id: UUID, payload: NoteUpdate, db: AsyncSession = Depends(get_db)):
-    note = await db.scalar(select(LmsStudentNote).where(LmsStudentNote.id == note_id))
+@router.patch("/notes/{note_id}", response_model=NoteResponse, dependencies=[Depends(require_teacher)])
+async def update_note(note_id: UUID, payload: NoteUpdate, db: AsyncSession = Depends(get_db), user: User = Depends(require_teacher)):
+    note = await db.scalar(_note_query(user, note_id))
     if not note:
         raise HTTPException(404, "Note not found")
     note.content = payload.content
@@ -721,9 +731,9 @@ async def update_note(note_id: UUID, payload: NoteUpdate, db: AsyncSession = Dep
     return note
 
 
-@router.delete("/notes/{note_id}", status_code=204)
-async def delete_note(note_id: UUID, db: AsyncSession = Depends(get_db)):
-    note = await db.scalar(select(LmsStudentNote).where(LmsStudentNote.id == note_id))
+@router.delete("/notes/{note_id}", status_code=204, dependencies=[Depends(require_teacher)])
+async def delete_note(note_id: UUID, db: AsyncSession = Depends(get_db), user: User = Depends(require_teacher)):
+    note = await db.scalar(_note_query(user, note_id))
     if not note:
         raise HTTPException(404, "Note not found")
     await db.delete(note)

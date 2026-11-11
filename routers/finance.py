@@ -12,6 +12,7 @@ from sqlalchemy.exc import IntegrityError
 
 from core.database import get_db
 from core.dependencies import get_current_user, teacher_or_admin
+from core.access import require_admin
 from models.expense import Expense
 from models.notification import Notification
 from models.payment import Payment
@@ -40,7 +41,8 @@ from schemas.finance import (
     TransactionItem,
 )
 
-router = APIRouter(prefix="/finance", tags=["finance"])
+# Night 2 access model: the whole router is admin only (core.access).
+router = APIRouter(prefix="/finance", tags=["finance"], dependencies=[Depends(require_admin)])
 LOCAL_TZ = ZoneInfo("Asia/Almaty")
 
 

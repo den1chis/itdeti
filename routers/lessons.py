@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 
 from core.database import get_db
 from core.dependencies import get_current_user, teacher_or_admin
+from core.access import require_admin
 from core.lesson_service import complete_overdue_lessons
 from models.lesson import Lesson
 from models.schedule import Event, StudentScheduleSlot
@@ -18,7 +19,8 @@ from models.student import Student
 from models.user import User
 from schemas.schedule import LessonCreate, LessonResponse, LessonUpdate, ScheduleItem
 
-router = APIRouter(tags=["lessons", "schedule"])
+# Night 2 access model: the whole router is admin only (core.access).
+router = APIRouter(tags=["lessons", "schedule"], dependencies=[Depends(require_admin)])
 LOCAL_TZ = ZoneInfo("Asia/Almaty")
 DEFAULT_LESSON_COLOR = "#4f46e5"
 
@@ -243,6 +245,10 @@ async def update_lesson(lesson_id: uuid.UUID, payload: LessonUpdate, db: AsyncSe
 
     if lesson.lesson_type == "trial":
         lesson.price = Decimal("0.00")
+
+    # Night 2: the actual teacher of a held lesson is fixed in the lesson; only fills an empty value.
+    if lesson.status == "completed" and lesson.teacher_id is None:
+        lesson.teacher_id = student.teacher_id
 
     should_deduct = lesson.status == "completed" and lesson.lesson_type != "trial"
     if should_deduct and not old_balance_deducted:

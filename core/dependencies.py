@@ -16,7 +16,13 @@ async def get_current_user(
     token = credentials.credentials
     payload = decode_token(token)
 
-    if not payload or payload.get("type") == "refresh":
+    # Student-site tokens (role=student, no "sub") never open CRM routes.
+    if (
+        not payload
+        or payload.get("type") == "refresh"
+        or payload.get("role") == "student"
+        or not payload.get("sub")
+    ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired token",
@@ -37,7 +43,11 @@ async def get_current_user(
 
 def require_role(*roles: str):
     async def checker(current_user: User = Depends(get_current_user)) -> User:
-        if current_user.role not in roles:
+        # Night 2: a user has a set of roles (users.roles, see core.access.roles_of); any one is enough.
+        # These legacy checks stay inside the routes; the access class of a route is set by core.access.
+        from core.access import roles_of
+
+        if not roles_of(current_user) & set(roles):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Insufficient permissions",

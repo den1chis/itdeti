@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 
 from core.database import get_db
 from core.dependencies import get_current_user, teacher_or_admin
+from core.access import require_admin
 from models.lesson import Lesson
 from models.parent import Parent, StudentParent
 from models.payment import Payment
@@ -20,7 +21,8 @@ from models.user import User
 from schemas.schedule import ScheduleSlotCreate, ScheduleSlotResponse, ScheduleSlotUpdate
 from schemas.students import BalanceResponse, ParentCreate, ParentResponse, ParentUpdate, StudentCreate, StudentResponse, StudentUpdate
 
-router = APIRouter(tags=["students"])
+# Night 2 access model: the whole router is admin only (core.access).
+router = APIRouter(tags=["students"], dependencies=[Depends(require_admin)])
 
 
 async def _sync_course_schedule(db: AsyncSession, student_id: UUID) -> None:
