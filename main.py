@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from core.background import start_background_jobs, stop_background_jobs
 from core.config import settings
 from core.database import Base, engine
+from core.version import APP_VERSION, git_commit
 
 import models.expense
 import models.lesson
@@ -124,9 +125,21 @@ except Exception:  # pragma: no cover
     logging.getLogger("itdeti").exception("Teacher/staff module failed to load; the rest of the API is unaffected")
 
 
+# Audit log for the admin (night 4, migration 014). Isolated the same way. Writing to the log (core/audit.py)
+# does not depend on this router.
+try:
+    import models.security  # noqa: F401
+    from routers import audit as audit_router
+
+    app.include_router(audit_router.router)
+except Exception:  # pragma: no cover
+    logging.getLogger("itdeti").exception("Audit module failed to load; the rest of the API is unaffected")
+
+
 @app.get("/health")
 async def health():
-    return {"status": "ok", "env": settings.APP_ENV}
+    # "version" changes with every release (core/version.py), "commit" is filled by Render (RENDER_GIT_COMMIT).
+    return {"status": "ok", "env": settings.APP_ENV, "version": APP_VERSION, "commit": git_commit()}
 
 
 if __name__ == "__main__":

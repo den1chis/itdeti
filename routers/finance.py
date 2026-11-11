@@ -5,11 +5,13 @@ from typing import List, Optional
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 
+from core import audit
+from core.client_ip import client_ip
 from core.database import get_db
 from core.dependencies import get_current_user, teacher_or_admin
 from core.access import require_admin
@@ -218,7 +220,7 @@ async def update_payment(payment_id: UUID, payload: PaymentUpdate, db: AsyncSess
 
 
 @router.delete("/payments/{payment_id}", response_model=PaymentResponse)
-async def cancel_payment(payment_id: UUID, db: AsyncSession = Depends(get_db), _: User = Depends(teacher_or_admin)):
+async def cancel_payment(payment_id: UUID, request: Request, db: AsyncSession = Depends(get_db), _: User = Depends(teacher_or_admin)):
     payment = await db.scalar(select(Payment).where(Payment.id == payment_id).with_for_update())
     if not payment:
         raise HTTPException(404, "Payment not found")
@@ -236,6 +238,8 @@ async def cancel_payment(payment_id: UUID, db: AsyncSession = Depends(get_db), _
 
     await db.commit()
     await db.refresh(payment)
+    await audit.record(audit.PAYMENT_DELETED, actor=_, target_type="payment", target_id=payment.id, ip=client_ip(request),
+                       details={"student": student.full_name, "amount": str(payment.amount)})
     return payment
 
 
@@ -284,7 +288,7 @@ async def update_expense(expense_id: UUID, payload: ExpenseUpdate, db: AsyncSess
 
 
 @router.delete("/expenses/{expense_id}", response_model=ExpenseResponse)
-async def cancel_expense(expense_id: UUID, db: AsyncSession = Depends(get_db), _: User = Depends(teacher_or_admin)):
+async def cancel_expense(expense_id: UUID, request: Request, db: AsyncSession = Depends(get_db), _: User = Depends(teacher_or_admin)):
     expense = await db.scalar(select(Expense).where(Expense.id == expense_id).with_for_update())
     if not expense:
         raise HTTPException(404, "Expense not found")
@@ -297,6 +301,8 @@ async def cancel_expense(expense_id: UUID, db: AsyncSession = Depends(get_db), _
 
     await db.commit()
     await db.refresh(expense)
+    await audit.record(audit.EXPENSE_DELETED, actor=_, target_type="expense", target_id=expense.id, ip=client_ip(request),
+                       details={"category": getattr(expense, "category", None), "amount": str(expense.amount)})
     return expense
 
 

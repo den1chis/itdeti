@@ -1,6 +1,6 @@
 # Маршруты API и классы доступа
 
-Состояние после ночи 3 (ветка `lms-mvp`; в ночь 3 маршруты не добавлялись, изменилась только документация FastAPI: `/docs`, `/redoc`, `/openapi.json` есть только при `ENABLE_DOCS=true`, иначе 404). Таблица сгенерирована: `python scripts/routes_inventory.py --before <снимок до ночи 2>`; колонка «Before night 2» — защита на начало ночи 2, «Access» — класс доступа сейчас.
+Состояние после ночи 4 (ветка `lms-mvp`). Ночь 4: добавлен `GET /audit` (журнал действий, только admin); `POST /auth/login` остаётся `public`, но ограничен по частоте и блокируется после неверных паролей (`core/login_guard.py`: 429 с `Retry-After`). В ночь 3 маршруты не добавлялись, изменилась только документация FastAPI: `/docs`, `/redoc`, `/openapi.json` есть только при `ENABLE_DOCS=true`, иначе 404. Таблица сгенерирована: `python scripts/routes_inventory.py --before <снимок до ночи 2>`; колонка «Before night 2» — защита на начало ночи 2, «Access» — класс доступа сейчас.
 
 ## Классы доступа (`core/access.py`)
 
@@ -22,10 +22,11 @@
 
 ## Все маршруты
 
-Всего: 138 строк (метод + путь), из них новых: 12.
+Всего: 139 строк (метод + путь), из них новых: 13 (в ночь 4 добавлен один маршрут: `GET /audit`).
 
 | Router | Method | Path | Before night 2 | Access |
 |---|---|---|---|---|
+| audit | GET | `/audit` | — (new) | admin |
 | auth | POST | `/auth/login` | NONE | public |
 | auth | POST | `/auth/logout` | NONE | public |
 | auth | GET | `/auth/me` | any CRM user | roles: admin, teacher, methodist |
