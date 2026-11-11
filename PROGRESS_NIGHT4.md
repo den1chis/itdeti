@@ -27,6 +27,8 @@
 
 - **Третий полный прогон, 00:56:59 → 01:38:07: 147 passed, 0 failed** (коммит `7528522`). Условия выкладки выполнены: тесты зелёные, итоговое ревью всего diff чистое, время 01:38 < 06:30. Начинаю раздел 4.
 
+- **Выкладка, 01:38–01:41:** шаг 1 (preflight, counts) — норма; шаг 2 (бэкап `itdeti_backup_2026-11-12_0139.json`, 33 таблицы, 2951 строка) — проверен; шаг 3 (миграция 014, postcheck, counts) — норма. **Шаг 4 заблокирован режимом автоподтверждения Claude Code → СТОП (раздел 6).** Push `lms-mvp` тоже заблокирован. Прод: база с 014, код старый, `/health` 200. Утром: `powershell -ExecutionPolicy Bypass -File D:\itdeti_learn\itdeti\scripts\deploy_night4.ps1 -FromStep 4`.
+
 ### Ревьюер
 - `D:\itdeti_learn\.claude\agents\reviewer.md` **нет**: файл лежит в `D:\itdeti_learn\.claude\.agents\reviewer.md` (папка с точкой). Вызов `subagent_type: reviewer` → «Agent type 'reviewer' not found» (агенты читаются из `.claude\agents\` при старте сессии).
 - Копию в `.claude\agents\` создать не удалось: режим автоподтверждения запретил менять настройки Claude Code.
