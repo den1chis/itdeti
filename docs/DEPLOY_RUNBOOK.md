@@ -1,5 +1,14 @@
 # Выкладка на прод: пошаговая инструкция (ветки `lms-mvp`)
 
+> **С ночи 4 выкладка автоматизирована.** Одна команда (PowerShell):
+> `powershell -ExecutionPolicy Bypass -File D:\itdeti_learn\itdeti\scripts\deploy_night4.ps1`
+> — preflight → counts → бэкап в `D:\itdeti_backups` → миграция 014 → postcheck → слияние и push `itdeti` → ожидание
+> новой версии в `/health` → смоук сервера (при провале — `git revert` слияния) → `itdetiWeb` → `itdetiLearn` → counts.
+> К прод-базе обращается только `scripts/prod_ops.py --prod` (секрет: `D:\itdeti_secrets\prod.env`, строка
+> `PROD_DATABASE_URL=...`). Продолжить после остановки: `… deploy_night4.ps1 -FromStep N`.
+> Откат и аварийная разблокировка входа: `docs/RUNBOOK_EMERGENCY.md`.
+> Ниже — ручная выкладка 2026-11-11 (миграции 012–013), оставлена как справка.
+
 Для кого: для человека без опыта выкладки. Делать по порядку, не пропуская проверок.
 Время: 1,5–2 часа, в окно без занятий (Android-приложение может ненадолго терять связь с сервером).
 
