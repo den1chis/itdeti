@@ -30,6 +30,10 @@
 | 011 | `011_tasks.sql` | задачи: `task_projects`, `tasks`, `task_occurrences` | нет нужды (`IF NOT EXISTS`) |
 | 012 | `012_student_accounts.sql` | `student_accounts` (с RLS), `students.teacher_id`, значение `methodist` в `user_role` (ночь 1; в комментарии файла остался старый путь `migrations/001_…`) | можно: идемпотентна (проверено на dev) |
 | 013 | `013_access_model.sql` | `users.roles` (+ заполнение из `users.role`), `lessons.teacher_id`, индексы, `student_accounts.password_enc` (ночь 2). Требует 012 | можно: идемпотентна (проверено на dev) |
+| 014 | `014_security.sql` | `auth_login_state`, `auth_email_locks` (ограничение входа в CRM), `audit_log` (журнал действий) — все с RLS; `refresh_tokens.token_hash` (+ заполнение хеша у существующих строк), индексы (ночь 4). К проду: `python scripts/prod_ops.py --prod migrate 014_security.sql` (только после `backup`) | можно: идемпотентна (проверено на dev) |
+
+С ночи 4 миграции с номером больше 013 применяются к проду скриптом `scripts/prod_ops.py` (бэкап не старше 30 минут,
+проверка «только добавления», затем `postcheck <номер>`), а не вручную в SQL Editor.
 
 Файлы 008 и 011 не включают RLS для своих таблиц: на проде проверить `scripts/prod_preflight.sql`
 (раздел «RLS») и при необходимости включить отдельной миграцией.
