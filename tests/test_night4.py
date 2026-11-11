@@ -183,6 +183,11 @@ def test_prod_ops_connection_error_never_prints_the_password(tmp_path, capsys):
     assert code == 2 and "ОШИБКА" in text
     for piece in ("SECRETX", "Ab/cd", "Ab%2Fcd", "abcdefghijklmnopqrst"):
         assert piece not in text
+    # A broken URL (no user@host part, broken port) is refused without quoting it.
+    for broken in ("postgresql://user:SECRETX", "postgresql://u:SECRETX@host:SECRETPORT/db"):
+        code = prod_ops.main(["--prod", "--secrets", str(_secrets(tmp_path, f"PROD_DATABASE_URL={broken}\n")), "counts"])
+        out = capsys.readouterr()
+        assert code == 2 and "SECRETX" not in out.out + out.err and "SECRETPORT" not in out.out + out.err
 
 
 def test_prod_ops_checks_format_and_rules():

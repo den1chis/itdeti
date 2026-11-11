@@ -117,13 +117,18 @@ def merge_and_push(repo: str) -> str:
         sh(["git", "checkout", "lms-mvp"], cwd, check=False)
 
 
-def revert_server(merge_commit: str) -> None:
+def revert_server(merge_commits: list) -> None:
+    """Revert every merge of this deploy (newest first) in main and push."""
     cwd = WORKSPACE / "itdeti"
-    say(f"ОТКАТ СЕРВЕРА: git revert -m 1 {merge_commit[:7]} в main")
+    sh(["git", "fetch", "origin"], cwd)
     sh(["git", "checkout", "main"], cwd)
     try:
-        sh(["git", "revert", "-m", "1", "--no-edit", merge_commit], cwd)
+        sh(["git", "merge", "--ff-only", "origin/main"], cwd)
+        for commit in reversed(merge_commits):
+            say(f"ОТКАТ СЕРВЕРА: git revert -m 1 {commit[:7]} в main")
+            sh(["git", "revert", "-m", "1", "--no-edit", commit], cwd)
         sh(["git", "push", "origin", "main"], cwd)
+        state(server_reverted=sh(["git", "rev-parse", "HEAD"], cwd))
     finally:
         sh(["git", "checkout", "lms-mvp"], cwd, check=False)
 
@@ -154,17 +159,24 @@ def server_smoke() -> list:
     answer is a failed check too (it must lead to the rollback, not to a traceback)."""
     # The login checks use up the per-IP limit of this computer for a minute: a repeated smoke test within
     # that minute would fail falsely (and roll the server back). Wait it out.
-    last = state().get("smoke_started_at", 0)
+    try:
+        last = float(state().get("smoke_logins_at", 0))
+    except Exception:
+        last = 0.0
     if time.time() - last < 70:
         wait = int(70 - (time.time() - last)) + 1
         say(f"  жду {wait} с: предыдущий смоук занял лимит входа с этого IP")
         time.sleep(wait)
-    state(smoke_started_at=time.time())
     try:
         return _server_smoke()
     except Exception as error:
         say(f"  FAIL смоук прерван ошибкой: {type(error).__name__}: {str(error)[:300]}")
         return [f"ошибка смоука: {type(error).__name__}"]
+    finally:
+        try:
+            state(smoke_logins_at=time.time())  # the per-IP window starts after the last login attempt
+        except Exception:
+            pass
 
 
 def _server_smoke() -> list:
@@ -267,28 +279,39 @@ def step3():
 
 
 def step4():
+    reverted = state().get("server_reverted")
+    if reverted:
+        raise Stop(f"сервер уже откатывался в этой выкладке (коммит отката {reverted[:7]} в main). Повторное слияние "
+                   "не вернёт код ночи 4: сначала вручную `git revert <коммит отката>` в main (docs/RUNBOOK_EMERGENCY.md, "
+                   "раздел 2), затем удалить ключ server_reverted из D:\\itdeti_backups\\deploy_night4_state.json")
     with http() as client:
         before = client.get(f"{API}/health").json()
     say(f"  сейчас на проде: {before}")
     state(health_before=before)
+    head_before = sh(["git", "rev-parse", "origin/main"], WORKSPACE / "itdeti")
     commit = merge_and_push("itdeti")
-    state(server_merge=commit)
+    if commit != head_before:  # a real merge happened: remember it for the rollback (all merges of this deploy)
+        state(server_merges=state().get("server_merges", []) + [commit])
     say(f"  жду деплой Render (до 15 минут): version = {APP_VERSION}")
     say(f"  новая версия отвечает: {wait_for_version(APP_VERSION)}")
 
 
 def step5():
     failures = server_smoke()
+    if failures:
+        # One retry before a rollback: a single network hiccup on this computer must not undo a good release.
+        say("  смоук не прошёл — повтор через минуту перед откатом: " + "; ".join(failures))
+        failures = server_smoke()
     if not failures:
         say("  смоук сервера пройден")
         return
-    commit = state().get("server_merge")
+    merges = state().get("server_merges", [])
     if NO_AUTO_REVERT:
         raise Stop("смоук сервера не прошёл (--no-auto-revert: откат НЕ выполнялся; команды — docs/RUNBOOK_EMERGENCY.md, "
-                   f"коммит слияния {commit or 'неизвестен'}): " + "; ".join(failures))
-    if not commit:
+                   f"коммиты слияния {', '.join(c[:7] for c in merges) or 'неизвестны'}): " + "; ".join(failures))
+    if not merges:
         raise Stop("смоук сервера не прошёл, а коммит слияния неизвестен — откат вручную (docs/RUNBOOK_EMERGENCY.md): " + "; ".join(failures))
-    revert_server(commit)
+    revert_server(merges)
     say(f"  старая версия отвечает: {wait_for_version(APP_VERSION, want_equal=False)}")
     raise Stop("смоук сервера не прошёл, сервер откачен (миграция оставлена): " + "; ".join(failures))
 
@@ -357,8 +380,9 @@ def main() -> int:
         say(f"\n=== Шаг {number}: {title} ===")
         try:
             fn()
-        except Stop as stop:
-            say(f"\nСТОП на шаге {number}: {stop}")
+        except Exception as error:  # Stop, and anything unexpected (network, broken state file): no traceback
+            reason = str(error) if isinstance(error, Stop) else f"непредвиденная ошибка {type(error).__name__}: {str(error)[:300]}"
+            say(f"\nСТОП на шаге {number}: {reason}")
             say(f"После устранения причины: python scripts/deploy_night4.py --prod --from-step {number}")
             return 1
     say("\nВыкладка завершена. Откат и аварийные действия: docs/RUNBOOK_EMERGENCY.md")

@@ -58,6 +58,11 @@ LIMIT 50;
    git push origin main
    git checkout lms-mvp
    ```
+   **Выложить ночь 4 снова после отката** (скрипт сам этого не делает): сначала отменить откат —
+   `git checkout main`, `git pull origin main`, `git revert <коммит «Revert "Merge lms-mvp: night 4 …"»>`,
+   `git push origin main`, `git checkout lms-mvp`; затем удалить ключ `server_reverted` из
+   `D:\itdeti_backups\deploy_night4_state.json` и продолжить `deploy_night4.ps1 -FromStep 5`.
+   Простое повторное слияние `lms-mvp` в `main` после отката ничего не вернёт.
 3. Миграцию `014_security.sql` откатывать **не нужно**: она только добавляет три таблицы и колонку
    `refresh_tokens.token_hash`; старый код их не замечает.
 4. Что почувствуют пользователи при откате сервера: сессии CRM, выданные **новым** сервером (вход или обновление

@@ -85,16 +85,26 @@ def to_dsn(url: str) -> str:
     # Percent-encode user and password: a raw "/", "?", "#" or "@" in the password breaks URL parsing, and
     # asyncpg then puts a piece of the password into its error text. unquote first, so an already encoded
     # password stays the same.
+    _remember_secret(url)
     rest = url[len("postgresql://"):]
     userinfo, at, hostpart = rest.rpartition("@")
-    if at:
-        user, colon, password = userinfo.partition(":")
-        _remember_secret(unquote(password))
-        _remember_secret(password)
-        userinfo = quote(unquote(user), safe=".") + (":" + quote(unquote(password), safe="") if colon else "")
-        url = f"postgresql://{userinfo}@{hostpart}"
-        _remember_secret(quote(unquote(password), safe=""))
+    if not at:
+        raise Refused("the database URL has no user@host part (broken value in the secrets file?)")
+    user, colon, password = userinfo.partition(":")
+    for value in (password, unquote(password), quote(unquote(password), safe=""), user, unquote(user)):
+        _remember_secret(value)
+    if "." in unquote(user):
+        _remember_secret(unquote(user).split(".", 1)[1])  # the project ref, shown masked only
+    userinfo = quote(unquote(user), safe=".") + (":" + quote(unquote(password), safe="") if colon else "")
+    url = f"postgresql://{userinfo}@{hostpart}"
     _remember_secret(url)
+    try:
+        parsed = urlparse(url)
+        parsed.port  # noqa: B018 - raises ValueError on a broken port
+        if not parsed.hostname:
+            raise ValueError
+    except ValueError:
+        raise Refused("the database URL cannot be parsed (host/port); check the secrets file") from None
     return url
 
 
@@ -504,8 +514,10 @@ def main(argv=None) -> int:
         print(f"ОТКАЗ: {redact(str(refusal))}")
         return 2
     except Exception as error:
-        # No traceback: it could carry the URL. Only the type and a redacted message.
-        print(f"ОШИБКА: {type(error).__name__}: {redact(str(error))[:500]}")
+        # No traceback: it could carry the URL. Only the type and a redacted message; a ValueError (URL
+        # parsing inside the driver) may quote a piece of the URL, so its text is never shown.
+        text = "" if isinstance(error, ValueError) else redact(str(error))[:500]
+        print(f"ОШИБКА: {type(error).__name__}: {text}")
         print("Действие остановлено; если это ошибка подключения — проверьте сеть и PROD_DATABASE_URL в файле секретов.")
         return 2
 
