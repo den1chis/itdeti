@@ -28,11 +28,16 @@ RUN = uuid.uuid4().hex[:6]
 PASSWORD = "pw-" + RUN
 # Unique "client addresses" of this run (TEST-NET-2 198.51.100.0/24 is used by night 3; 203.0.113.0/24 here
 # with a run-specific third octet would leave the documentation range, so IPv6 documentation space is used).
-IP_PREFIX = f"2001:db8:{RUN[:4]}:{RUN[4:]}"
+# The server stores addresses normalized (ipaddress): groups must have no leading zeros, or the strings the
+# tests compare and query by would differ from the stored ones (a run id like "11d10e" gave "...:0e::").
+# "| 0x1000" keeps every group exactly 4 hex digits without a leading zero.
+IP_PREFIX = f"2001:db8:{int(RUN[:4], 16) | 0x1000:x}:{int(RUN[4:], 16) | 0x1000:x}"
 
 
 def ip(n: int) -> str:
-    return f"{IP_PREFIX}::{n:x}"
+    value = f"{IP_PREFIX}::{n:x}"
+    assert str(__import__("ipaddress").ip_address(value)) == value, value
+    return value
 
 
 def _request(socket_ip="10.0.0.1", headers=None):
