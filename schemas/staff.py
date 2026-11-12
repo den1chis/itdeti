@@ -156,6 +156,29 @@ class TeacherAssign(BaseModel):
     teacher_id: Optional[uuid.UUID] = None
 
 
+class StaffStudentsAssign(BaseModel):
+    """Bulk assignment of students to ONE teacher (adds to his students; nobody is unassigned here)."""
+    student_ids: List[uuid.UUID] = Field(min_length=1, max_length=200)
+    # A student who already has ANOTHER teacher is moved only when the admin confirmed it in the CRM.
+    confirm_reassign: bool = False
+
+
+class StaffStudentBrief(BaseModel):
+    id: uuid.UUID
+    full_name: str
+    course: Optional[str] = None
+    is_active: bool
+    teacher_id: Optional[uuid.UUID] = None
+    teacher_name: Optional[str] = None
+
+
+class StaffStudentsAssigned(BaseModel):
+    teacher_id: uuid.UUID
+    assigned: int
+    reassigned: List[StaffStudentBrief] = Field(default_factory=list)
+    students: List[StaffStudentBrief] = Field(default_factory=list)  # all students of the teacher after the change
+
+
 class StudentTeacherResponse(BaseModel):
     student_id: uuid.UUID
     teacher_id: Optional[uuid.UUID] = None
