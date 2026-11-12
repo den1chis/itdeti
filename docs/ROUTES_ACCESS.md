@@ -1,12 +1,12 @@
 # Маршруты API и классы доступа
 
-Состояние после ночи 4 (ветка `lms-mvp`). Ночь 4: добавлен `GET /audit` (журнал действий, только admin); `POST /auth/login` остаётся `public`, но ограничен по частоте и блокируется после неверных паролей (`core/login_guard.py`: 429 с `Retry-After`). В ночь 3 маршруты не добавлялись, изменилась только документация FastAPI: `/docs`, `/redoc`, `/openapi.json` есть только при `ENABLE_DOCS=true`, иначе 404. Таблица сгенерирована: `python scripts/routes_inventory.py --before <снимок до ночи 2>`; колонка «Before night 2» — защита на начало ночи 2, «Access» — класс доступа сейчас.
+Состояние после ночи 5 (ветка `lms-mvp`). Ночь 5: добавлены `POST /auth/handoff` (сотрудник), `POST /auth/handoff/redeem` (public, одноразовый код), `GET /teacher/learning/students[/{student_id}]` (admin, teacher — свои), `GET`/`PUT /staff/{user_id}/students` (admin); `/auth/me` дополнительно отдаёт `roles`, `GET /students*` (admin) — `teacher_id`. Ночь 4: добавлен `GET /audit` (журнал действий, только admin); `POST /auth/login` остаётся `public`, но ограничен по частоте и блокируется после неверных паролей (`core/login_guard.py`: 429 с `Retry-After`). В ночь 3 маршруты не добавлялись, изменилась только документация FastAPI: `/docs`, `/redoc`, `/openapi.json` есть только при `ENABLE_DOCS=true`, иначе 404. Таблица сгенерирована: `python scripts/routes_inventory.py --before <снимок до ночи 2>`; колонка «Before night 2» — защита на начало ночи 2, «Access» — класс доступа сейчас.
 
 ## Классы доступа (`core/access.py`)
 
 | Класс | Кто проходит | Как задан |
 |---|---|---|
-| `public` | все, без входа | явный список `PUBLIC_ROUTES` (`/health`, `/auth/login`, `/auth/refresh`, `/auth/logout`, `/student/auth/login`, документация FastAPI — только при `ENABLE_DOCS=true`) |
+| `public` | все, без входа | явный список `PUBLIC_ROUTES` (`/health`, `/auth/login`, `/auth/refresh`, `/auth/logout`, `/student/auth/login`, `/auth/handoff/redeem`, документация FastAPI — только при `ENABLE_DOCS=true`) |
 | `student` | только токен ученического сайта | зависимость `get_current_student` |
 | `admin` | только роль `admin` | `require_admin` (у старых роутеров — на уровне роутера) |
 | `roles: admin, teacher, methodist` | любой сотрудник | `require_staff` |
@@ -22,12 +22,14 @@
 
 ## Все маршруты
 
-Всего: 139 строк (метод + путь), из них новых: 13 (в ночь 4 добавлен один маршрут: `GET /audit`).
+Всего: 145 строк (метод + путь), из них новых: 19 (в ночь 4 добавлен `GET /audit`, в ночь 5 — шесть маршрутов, отмечены «night 5»).
 
 | Router | Method | Path | Before night 2 | Access |
 |---|---|---|---|---|
 | audit | GET | `/audit` | — (new) | admin |
 | auth | POST | `/auth/login` | NONE | public |
+| auth | POST | `/auth/handoff` | — (new, night 5) | roles: admin, teacher, methodist (target `student:<id>` — только свой ученик, иначе 404) |
+| auth | POST | `/auth/handoff/redeem` | — (new, night 5) | public (одноразовый код, лимит 10 в минуту на IP) |
 | auth | POST | `/auth/logout` | NONE | public |
 | auth | GET | `/auth/me` | any CRM user | roles: admin, teacher, methodist |
 | auth | POST | `/auth/refresh` | NONE | public |
@@ -118,6 +120,8 @@
 | staff | POST | `/staff` | — (new) | admin |
 | staff | PATCH | `/staff/{user_id}` | — (new) | admin |
 | staff | POST | `/staff/{user_id}/reset-password` | — (new) | admin |
+| staff | GET | `/staff/{user_id}/students` | — (new, night 5) | admin |
+| staff | PUT | `/staff/{user_id}/students` | — (new, night 5) | admin |
 | staff | PUT | `/students/{student_id}/teacher` | — (new) | admin |
 | student_access | GET | `/students/{student_id}/access` | role in admin | roles: admin, teacher |
 | student_access | PATCH | `/students/{student_id}/access` | role in admin | admin |
@@ -161,6 +165,8 @@
 | tasks | POST | `/tasks/{task_id}/move` | role in admin/teacher | admin |
 | tasks | POST | `/tasks/{task_id}/skip` | role in admin/teacher | admin |
 | teacher | GET | `/teacher/lessons` | — (new) | roles: admin, teacher |
+| teacher | GET | `/teacher/learning/students` | — (new, night 5) | roles: admin, teacher |
+| teacher | GET | `/teacher/learning/students/{student_id}` | — (new, night 5) | roles: admin, teacher |
 | teacher | GET | `/teacher/me` | — (new) | roles: admin, teacher |
 | teacher | GET | `/teacher/students` | — (new) | roles: admin, teacher |
 | teacher | GET | `/teacher/students/{student_id}` | — (new) | roles: admin, teacher |
