@@ -16,11 +16,13 @@ from datetime import datetime, timezone
 from typing import List
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core import audit
+from core.client_ip import client_ip
 from core.access import ADMIN, STAFF_ROLES, TEACHER, active_teacher_or_400, primary_role, require_admin, role_sql, roles_of
 from core.database import get_db
 from core.dependencies import get_current_user
@@ -130,7 +132,13 @@ async def list_staff(include_inactive: bool = True, db: AsyncSession = Depends(g
 
 
 @router.post("/staff", response_model=StaffCredentials, status_code=201)
-async def create_staff(payload: StaffCreate, response: Response, db: AsyncSession = Depends(get_db)):
+async def create_staff(
+    payload: StaffCreate,
+    request: Request,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     _no_store(response)
     email = payload.email.strip().lower()
     if await db.scalar(select(User.id).where(func.lower(User.email) == email)):
@@ -153,6 +161,8 @@ async def create_staff(payload: StaffCreate, response: Response, db: AsyncSessio
         raise HTTPException(409, "Пользователь с таким email уже есть") from exc
     await db.refresh(user)
     log.info("staff user %s created with roles %s", user.id, ",".join(payload.roles))
+    await audit.record(audit.STAFF_CREATED, actor=current_user, target_type="user", target_id=user.id,
+                       ip=client_ip(request), details={"name": user.full_name, "email": user.email, "roles": list(user.roles or [])})
     return StaffCredentials(**(await _out(db, user)).model_dump(), password=password)
 
 
@@ -160,6 +170,7 @@ async def create_staff(payload: StaffCreate, response: Response, db: AsyncSessio
 async def update_staff(
     user_id: UUID,
     payload: StaffUpdate,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -170,6 +181,7 @@ async def update_staff(
             raise HTTPException(400, f"{field} cannot be null")
 
     old_roles = roles_of(user)
+    was_active = bool(user.is_active)
     new_roles = set(changes["roles"]) if "roles" in changes else old_roles
     deactivating = changes.get("is_active") is False and bool(user.is_active)
     losing_teacher = TEACHER in old_roles and TEACHER not in new_roles
@@ -207,6 +219,14 @@ async def update_staff(
     await db.refresh(user)
     if deactivating or "roles" in changes:
         log.info("staff user %s updated: active=%s roles=%s", user.id, user.is_active, ",".join(user.roles or []))
+    who = {"name": user.full_name, "email": user.email}
+    if roles_of(user) != old_roles:
+        await audit.record(audit.STAFF_ROLES_CHANGED, actor=current_user, target_type="user", target_id=user.id,
+                           ip=client_ip(request),
+                           details={**who, "before": [r for r in STAFF_ROLES if r in old_roles], "after": list(user.roles or [])})
+    if bool(user.is_active) != was_active:
+        await audit.record(audit.STAFF_ENABLED if user.is_active else audit.STAFF_DISABLED, actor=current_user,
+                           target_type="user", target_id=user.id, ip=client_ip(request), details=who)
     return await _out(db, user)
 
 

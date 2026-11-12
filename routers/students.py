@@ -4,11 +4,13 @@ from decimal import Decimal
 from typing import List
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 
+from core import audit
+from core.client_ip import client_ip
 from core.database import get_db
 from core.dependencies import get_current_user, teacher_or_admin
 from core.access import require_admin
@@ -129,7 +131,7 @@ async def update_student(student_id: UUID, payload: StudentUpdate, db: AsyncSess
 
 
 @router.delete("/students/{student_id}", status_code=204)
-async def deactivate_student(student_id: UUID, db: AsyncSession = Depends(get_db), _: User = Depends(teacher_or_admin)):
+async def deactivate_student(student_id: UUID, request: Request, db: AsyncSession = Depends(get_db), _: User = Depends(teacher_or_admin)):
     """Deactivate student and remove active recurring schedule plus future generated lessons atomically.
     Completed/past lessons and financial history are preserved.
     """
@@ -142,6 +144,8 @@ async def deactivate_student(student_id: UUID, db: AsyncSession = Depends(get_db
     await db.execute(StudentScheduleSlot.__table__.update().where(StudentScheduleSlot.student_id == student_id).values(is_active=False, valid_until=date.today()))
     student.is_active = False
     await db.commit()
+    await audit.record(audit.STUDENT_DELETED, actor=_, target_type="student", target_id=student_id,
+                       ip=client_ip(request), details={"student": student.full_name})
 
 
 @router.post("/students/{student_id}/parents/{parent_id}", status_code=201)

@@ -9,11 +9,13 @@ The password is generated with `secrets` and stored twice: bcrypt hash for login
 import logging
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core import audit
+from core.client_ip import client_ip
 from core.database import get_db
 from core.access import require_admin, require_teacher, student_or_404
 from core.security import hash_password
@@ -53,6 +55,12 @@ def _status(student_id: UUID, account) -> AccessStatus:
 async def _student(db: AsyncSession, student_id: UUID, user: User) -> Student:
     """The student if it is visible to the user (admin: any, teacher: own). Otherwise 404."""
     return await student_or_404(db, user, student_id, "Ученик не найден")
+
+
+async def _audit(action: str, request: Request, user: User, student: Student, **details) -> None:
+    """Audit row for an action on a student's access (never the password itself)."""
+    await audit.record(action, actor=user, target_type="student", target_id=student.id, ip=client_ip(request),
+                       details={"student": student.full_name, **details})
 
 
 def _set_password(account: StudentAccount, password: str) -> None:
@@ -102,7 +110,7 @@ async def suggest_login(student_id: UUID, db: AsyncSession = Depends(get_db), us
 
 
 @router.post("/students/{student_id}/access", response_model=AccessCredentials, status_code=201, dependencies=[Depends(require_admin)])
-async def create_access(student_id: UUID, payload: AccessCreate, response: Response, db: AsyncSession = Depends(get_db), user: User = Depends(require_admin)):
+async def create_access(student_id: UUID, payload: AccessCreate, request: Request, response: Response, db: AsyncSession = Depends(get_db), user: User = Depends(require_admin)):
     _no_store(response)
     student = await _student(db, student_id, user)
     if await _account(db, student_id):
@@ -122,13 +130,14 @@ async def create_access(student_id: UUID, payload: AccessCreate, response: Respo
         await db.rollback()
         raise HTTPException(409, "Такой логин уже занят или доступ уже создан")
     await db.refresh(account)
+    await _audit(audit.STUDENT_ACCESS_CREATED, request, user, student, login=account.login)
     return AccessCredentials(**_status(student_id, account).model_dump(), password=password)
 
 
 @router.post("/students/{student_id}/access/reset-password", response_model=AccessCredentials, dependencies=[Depends(require_teacher)])
-async def reset_password(student_id: UUID, response: Response, db: AsyncSession = Depends(get_db), user: User = Depends(require_teacher)):
+async def reset_password(student_id: UUID, request: Request, response: Response, db: AsyncSession = Depends(get_db), user: User = Depends(require_teacher)):
     _no_store(response)
-    await _student(db, student_id, user)
+    student = await _student(db, student_id, user)
     account = await _account(db, student_id)
     if not account:
         raise HTTPException(404, "Доступ ещё не создан")
@@ -138,15 +147,17 @@ async def reset_password(student_id: UUID, response: Response, db: AsyncSession 
     account.locked_until = None
     await db.commit()
     await db.refresh(account)
+    await _audit(audit.STUDENT_PASSWORD_RESET, request, user, student, login=account.login)
     return AccessCredentials(**_status(student_id, account).model_dump(), password=password)
 
 
 @router.patch("/students/{student_id}/access", response_model=AccessStatus, dependencies=[Depends(require_admin)])
-async def update_access(student_id: UUID, payload: AccessUpdate, db: AsyncSession = Depends(get_db), user: User = Depends(require_admin)):
-    await _student(db, student_id, user)
+async def update_access(student_id: UUID, payload: AccessUpdate, request: Request, db: AsyncSession = Depends(get_db), user: User = Depends(require_admin)):
+    student = await _student(db, student_id, user)
     account = await _account(db, student_id)
     if not account:
         raise HTTPException(404, "Доступ ещё не создан")
+    was_active = bool(account.is_active)
     changes = payload.model_dump(exclude_unset=True)
     if changes.get("login") is not None:
         account.login = await _checked_login(db, changes["login"], student_id)
@@ -161,14 +172,17 @@ async def update_access(student_id: UUID, payload: AccessUpdate, db: AsyncSessio
         await db.rollback()
         raise HTTPException(409, "Такой логин уже занят")
     await db.refresh(account)
+    if bool(account.is_active) != was_active:
+        await _audit(audit.STUDENT_ACCESS_ENABLED if account.is_active else audit.STUDENT_ACCESS_DISABLED,
+                     request, user, student, login=account.login)
     return _status(student_id, account)
 
 
 @router.get("/students/{student_id}/access/password", response_model=AccessPassword, dependencies=[Depends(require_teacher)])
-async def view_password(student_id: UUID, response: Response, db: AsyncSession = Depends(get_db), user: User = Depends(require_teacher)):
+async def view_password(student_id: UUID, request: Request, response: Response, db: AsyncSession = Depends(get_db), user: User = Depends(require_teacher)):
     """The student's current password in plain text (admin, or the student's own teacher)."""
     _no_store(response)
-    await _student(db, student_id, user)
+    student = await _student(db, student_id, user)
     account = await _account(db, student_id)
     if not account:
         raise HTTPException(404, "Доступ ещё не создан")
@@ -181,13 +195,14 @@ async def view_password(student_id: UUID, response: Response, db: AsyncSession =
         raise HTTPException(409, {"code": "password_not_stored", "message": "Пароль недоступен для просмотра, сбросьте"})
     # Only the fact, never the value.
     log.info("user %s viewed the password of student %s", user.id, student_id)
+    await _audit(audit.STUDENT_PASSWORD_VIEWED, request, user, student, login=account.login)
     return AccessPassword(student_id=student_id, login=account.login, password=password)
 
 
 @router.post("/students/{student_id}/access/unlock", response_model=AccessStatus, dependencies=[Depends(require_teacher)])
-async def unlock_access(student_id: UUID, db: AsyncSession = Depends(get_db), user: User = Depends(require_teacher)):
+async def unlock_access(student_id: UUID, request: Request, db: AsyncSession = Depends(get_db), user: User = Depends(require_teacher)):
     """Lift the lockout after wrong passwords (the automatic 15-minute unlock stays as it is)."""
-    await _student(db, student_id, user)
+    student = await _student(db, student_id, user)
     account = await _account(db, student_id)
     if not account:
         raise HTTPException(404, "Доступ ещё не создан")
@@ -195,4 +210,5 @@ async def unlock_access(student_id: UUID, db: AsyncSession = Depends(get_db), us
     account.locked_until = None
     await db.commit()
     await db.refresh(account)
+    await _audit(audit.STUDENT_ACCESS_UNLOCKED, request, user, student, login=account.login)
     return _status(student_id, account)

@@ -1,3 +1,4 @@
+import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -26,8 +27,10 @@ def create_access_token(user_id: str, role: str) -> str:
 
 def create_refresh_token(user_id: str) -> str:
     expire = datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+    # "jti": two tokens issued for one user within the same second must still differ (the stored hash is
+    # unique; without it two simultaneous logins of one account collided).
     return jwt.encode(
-        {"sub": user_id, "type": "refresh", "exp": expire},
+        {"sub": user_id, "type": "refresh", "exp": expire, "jti": secrets.token_hex(8)},
         settings.JWT_SECRET_KEY,
         algorithm=settings.JWT_ALGORITHM,
     )
