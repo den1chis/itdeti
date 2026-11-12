@@ -141,10 +141,12 @@ async def refresh(payload: RefreshRequest, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=401, detail="User is inactive")
 
     # Ротация токена: старая запись (в т. ч. в старом открытом формате) удаляется, новая хранится хешем.
+    # A session opened by a one-time code keeps its hard end ("cap", night 5).
+    cap = payload_data.get("cap")
     await db.delete(stored)
     new_access = create_access_token(str(user.id), user.role)
-    new_refresh = create_refresh_token(str(user.id))
-    db.add(refresh_tokens.new_row(user.id, new_refresh))
+    new_refresh = create_refresh_token(str(user.id), cap=cap)
+    db.add(refresh_tokens.new_row(user.id, new_refresh, cap=cap))
     await db.commit()
 
     await refresh_tokens.purge_expired()
@@ -233,9 +235,12 @@ async def redeem_handoff(payload: HandoffRedeem, request: Request, response: Res
     if redeemed.target.startswith("student:") and not has_any_role(user, ADMIN, TEACHER):
         raise _bad_code()
 
+    # The platform session opened by a code ends after HANDOFF_SESSION_HOURS whatever happens (refresh keeps the
+    # cap): a stolen short-lived CRM access token cannot be turned into a 30-day session this way.
+    cap = int(time.time()) + handoff.HANDOFF_SESSION_HOURS * 3600
     access_token = create_access_token(str(user.id), user.role)
-    refresh_token = create_refresh_token(str(user.id))
-    db.add(refresh_tokens.new_row(user.id, refresh_token))
+    refresh_token = create_refresh_token(str(user.id), cap=cap)
+    db.add(refresh_tokens.new_row(user.id, refresh_token, cap=cap))
     await db.commit()
     await audit.record(audit.HANDOFF_USED, actor=user, target_type="user", target_id=user.id, ip=ip,
                        details={"target": redeemed.target})

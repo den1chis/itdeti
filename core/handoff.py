@@ -22,6 +22,9 @@ from core.rate_limit import SlidingWindowLimiter
 from models.security import AuthHandoffCode
 
 CODE_TTL_SECONDS = 60
+# A platform session opened by a code ends after this many hours (refresh does not extend it); after that the
+# staff member opens the platform from the CRM again or logs in with the password.
+HANDOFF_SESSION_HOURS = 12
 CODE_BYTES = 32
 TARGET_RE = re.compile(r"^(profile|catalog|student:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$")
 # What a code may look like (secrets.token_urlsafe(32) gives 43 characters); anything else is refused at once.

@@ -30,13 +30,16 @@ def token_hash(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-def new_row(user_id, token: str) -> RefreshToken:
+def new_row(user_id, token: str, cap: Optional[int] = None) -> RefreshToken:
     digest = token_hash(token)
+    expires_at = datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+    if cap is not None:  # session opened by a one-time code (night 5): never longer than its cap
+        expires_at = min(expires_at, datetime.fromtimestamp(int(cap), timezone.utc))
     return RefreshToken(
         user_id=user_id,
         token=HASH_PREFIX + digest,
         token_hash=digest,
-        expires_at=datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
+        expires_at=expires_at,
     )
 
 

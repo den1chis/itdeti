@@ -423,3 +423,21 @@ def test_migration_015_is_additive_with_rls():
     assert prod_ops.migration_problems(sql) == []
     assert prod_ops.resolve_migration("015_staff_handoff.sql").name == "015_staff_handoff.sql"
     assert "ENABLE ROW LEVEL SECURITY" in sql and not re.search(r"\bDROP\b|\bDELETE\s+FROM\b|\bRENAME\b", sql, re.I)
+
+
+def test_handoff_session_has_a_hard_end_that_refresh_keeps(client, world, proxied):
+    """Review A: a session from a code is capped (HANDOFF_SESSION_HOURS) and rotation does not extend it."""
+    from jose import jwt
+
+    code = issue(client, world, "A", "catalog").json()["code"]
+    data = redeem(client, code, ip(30)).json()
+    claims = jwt.get_unverified_claims(data["refresh_token"])
+    cap = claims["cap"]
+    assert cap - datetime.now(timezone.utc).timestamp() <= handoff.HANDOFF_SESSION_HOURS * 3600 + 5
+    assert claims["exp"] <= cap
+    rotated = client.post("/auth/refresh", json={"refresh_token": data["refresh_token"]}).json()
+    assert jwt.get_unverified_claims(rotated["refresh_token"])["cap"] == cap
+    rows = run(client, _rows, RefreshToken, RefreshToken.user_id == world["A"].id)
+    assert any(abs(r.expires_at.timestamp() - cap) < 2 for r in rows)
+    # an ordinary login is not capped
+    assert "cap" not in jwt.get_unverified_claims(login(client, "A", from_ip=ip(31)).json()["refresh_token"])
