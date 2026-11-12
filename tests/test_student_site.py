@@ -241,7 +241,10 @@ def test_task_tests_are_not_sent_to_student(client, world):
 
 
 # ---------------------------------------------------------------- role isolation
-PUBLIC = {("POST", "/auth/login"), ("POST", "/auth/refresh"), ("POST", "/auth/logout"), ("GET", "/health")}
+# Night 5: /auth/handoff/redeem is public by design (a one-time code, not a token); a student token is not a
+# valid code there - tests/test_night5.py::test_handoff_cannot_be_issued_by_students_refresh_tokens_or_anonymous.
+PUBLIC = {("POST", "/auth/login"), ("POST", "/auth/refresh"), ("POST", "/auth/logout"), ("GET", "/health"),
+          ("POST", "/auth/handoff/redeem")}
 
 
 def _crm_routes():
