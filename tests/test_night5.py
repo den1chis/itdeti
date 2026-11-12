@@ -616,3 +616,21 @@ def test_routes_doc_lists_every_route():
     for route in main.app.routes:
         if isinstance(route, APIRoute) and route.path not in ("/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect"):
             assert f"`{route.path}`" in doc, route.path
+
+
+# ================================================================ deploy (section 6): scripts, never run against prod here
+def test_night5_check_files_and_deploy_script():
+    from scripts import prod_ops
+
+    checks = prod_ops.parse_checks((ROOT / "scripts" / "prod_postcheck_015.sql").read_text(encoding="utf-8"))
+    assert [c["n"] for c in checks] == list(range(1, len(checks) + 1)) and len(checks) >= 5
+    for c in checks:
+        assert c["sql"].lstrip().upper().startswith("SELECT")
+    assert "auth_handoff_codes" in prod_ops.COUNT_TABLES and "auth_handoff_codes" in prod_ops.ANY_CHANGE_ALLOWED
+    source = (ROOT / "scripts" / "deploy_night5.py").read_text(encoding="utf-8")
+    assert 'MIGRATION = "015_staff_handoff.sql"' in source and "night5_smoke(" in source
+    assert "/auth/handoff/redeem" in source and "общая блокировка" in source and "/staff" in source
+    import subprocess, sys
+    out = subprocess.run([sys.executable, "-B", str(ROOT / "scripts" / "deploy_night5.py")], capture_output=True, text=True,
+                         encoding="utf-8", errors="replace")
+    assert out.returncode == 2 and "--prod" in out.stdout  # refuses without the explicit flag
