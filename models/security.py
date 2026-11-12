@@ -1,7 +1,7 @@
-"""Night 4 (migration 014): CRM login throttling state and the audit log."""
+"""Night 4 (migration 014): CRM login throttling state and the audit log. Night 5 (015): handoff codes."""
 import uuid
 
-from sqlalchemy import Column, DateTime, Integer, String, Text
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.sql import func
 
@@ -43,3 +43,16 @@ class AuditLog(Base):
     target_id = Column(String)
     ip = Column(String)
     details = Column(JSONB, nullable=False, default=dict, server_default="{}")
+
+
+class AuthHandoffCode(Base):
+    """Night 5 (migration 015): one-time code "CRM -> learning platform" (core/handoff.py). Only the hash is stored."""
+    __tablename__ = "auth_handoff_codes"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    code_hash = Column(Text, nullable=False, unique=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    target = Column(Text, nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    created_ip = Column(Text)
