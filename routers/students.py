@@ -68,7 +68,7 @@ async def _student_response(db: AsyncSession, student: Student) -> StudentRespon
     today = date.today()
     current_lessons, current_due = await _month_stats(db, student, today.year, today.month)
     remaining = int(max(Decimal("0"), Decimal(student.balance)) // Decimal(student.lesson_price))
-    return StudentResponse(id=student.id, user_id=student.user_id, full_name=student.full_name, birth_date=student.birth_date, course=student.course, notes=student.notes, balance=student.balance, lesson_price=student.lesson_price, is_active=student.is_active, created_at=student.created_at, updated_at=student.updated_at, remaining_lessons=remaining, current_month_lessons=current_lessons, current_month_due=current_due, parents=await _parents_for_student(db, student.id))
+    return StudentResponse(id=student.id, user_id=student.user_id, full_name=student.full_name, birth_date=student.birth_date, course=student.course, notes=student.notes, balance=student.balance, lesson_price=student.lesson_price, is_active=student.is_active, created_at=student.created_at, updated_at=student.updated_at, remaining_lessons=remaining, current_month_lessons=current_lessons, current_month_due=current_due, parents=await _parents_for_student(db, student.id), teacher_id=student.teacher_id)
 
 
 @router.post("/parents", response_model=ParentResponse, status_code=201)
