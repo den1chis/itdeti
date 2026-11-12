@@ -1,20 +1,30 @@
 import logging
 import time
 from datetime import datetime, timezone
+from uuid import UUID
 
 import bcrypt
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core import audit, login_guard, refresh_tokens
-from core.access import require_staff
+from core import audit, handoff, login_guard, refresh_tokens
+from core.access import ADMIN, STAFF_ROLES, TEACHER, has_any_role, require_staff, roles_of, student_or_404
 from core.client_ip import client_ip
 from core.database import get_db
 from core.dependencies import get_current_user
 from core.security import create_access_token, create_refresh_token, decode_token, verify_password
 from models.user import User
-from schemas.auth import LoginRequest, RefreshRequest, TokenResponse, UserResponse
+from schemas.auth import (
+    HandoffCreate,
+    HandoffIssued,
+    HandoffRedeem,
+    HandoffTokens,
+    LoginRequest,
+    RefreshRequest,
+    TokenResponse,
+    UserResponse,
+)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 log = logging.getLogger("itdeti.auth")
@@ -151,4 +161,82 @@ async def logout(payload: RefreshRequest, db: AsyncSession = Depends(get_db)):
 
 @router.get("/me", response_model=UserResponse, dependencies=[Depends(require_staff)])
 async def me(current_user: User = Depends(get_current_user)):
-    return current_user
+    # "role" (primary) stays for the old CRM code and the Android app; "roles" is the full set (night 5).
+    return UserResponse(
+        id=current_user.id,
+        email=current_user.email,
+        role=current_user.role,
+        roles=[r for r in STAFF_ROLES if r in roles_of(current_user)],
+        full_name=current_user.full_name,
+        phone=current_user.phone,
+    )
+
+
+# ---------------------------------------------------------------- handoff CRM -> learning platform (night 5)
+def _no_store(response: Response) -> None:
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+
+
+def _bad_code() -> HTTPException:
+    # One answer for every refusal: unknown, used, expired, inactive user, not staff.
+    return HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail={"code": "invalid_code", "message": "Ссылка для входа недействительна или устарела. Войдите логином и паролем."},
+    )
+
+
+@router.post("/handoff", response_model=HandoffIssued, status_code=201)
+async def create_handoff(
+    payload: HandoffCreate,
+    request: Request,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_staff),
+):
+    """One-time code (60 s) for opening the learning platform without the password. Staff only (a student token,
+    a refresh token or no token -> 401/403). Target "student:<id>": only an own student (admin: any), else 404."""
+    _no_store(response)
+    target = payload.target.strip().lower()
+    if not handoff.valid_target(target):
+        raise HTTPException(400, "target: profile, catalog или student:<id>")
+    if target.startswith("student:"):
+        if not has_any_role(current_user, ADMIN, TEACHER):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Student not found")
+        await student_or_404(db, current_user, UUID(target.split(":", 1)[1]))
+    wait = handoff.issue_limiter.hit(str(current_user.id))
+    if wait is not None:
+        raise _too_many(wait)
+    ip = client_ip(request)
+    code = await handoff.issue(db, current_user.id, target, ip)
+    await db.commit()
+    await audit.record(audit.HANDOFF_ISSUED, actor=current_user, target_type="user", target_id=current_user.id,
+                       ip=ip, details={"target": target})
+    return HandoffIssued(code=code, expires_in=handoff.CODE_TTL_SECONDS, target=target)
+
+
+@router.post("/handoff/redeem", response_model=HandoffTokens)
+async def redeem_handoff(payload: HandoffRedeem, request: Request, response: Response, db: AsyncSession = Depends(get_db)):
+    """Exchange a one-time code for a NEW pair of staff tokens (public route, limited per client IP)."""
+    _no_store(response)
+    ip = client_ip(request)
+    wait = handoff.redeem_limiter.hit(ip)
+    if wait is not None:
+        raise _too_many(wait)
+    redeemed = await handoff.redeem(db, payload.code)
+    await db.commit()  # the code is gone in any case (used once)
+    if not redeemed:
+        raise _bad_code()
+    user = await db.scalar(select(User).where(User.id == redeemed.user_id))
+    if not user or user.is_active is not True or not has_any_role(user, *STAFF_ROLES):
+        raise _bad_code()
+    if redeemed.target.startswith("student:") and not has_any_role(user, ADMIN, TEACHER):
+        raise _bad_code()
+
+    access_token = create_access_token(str(user.id), user.role)
+    refresh_token = create_refresh_token(str(user.id))
+    db.add(refresh_tokens.new_row(user.id, refresh_token))
+    await db.commit()
+    await audit.record(audit.HANDOFF_USED, actor=user, target_type="user", target_id=user.id, ip=ip,
+                       details={"target": redeemed.target})
+    return HandoffTokens(access_token=access_token, refresh_token=refresh_token, target=redeemed.target)
