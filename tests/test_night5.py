@@ -634,3 +634,21 @@ def test_night5_check_files_and_deploy_script():
     out = subprocess.run([sys.executable, "-B", str(ROOT / "scripts" / "deploy_night5.py")], capture_output=True, text=True,
                          encoding="utf-8", errors="replace")
     assert out.returncode == 2 and "--prod" in out.stdout  # refuses without the explicit flag
+
+
+def test_taking_a_role_away_ends_sessions_adding_one_does_not(client, world, proxied):
+    """Review B: refresh tokens are deleted when a role is removed (not when one is added)."""
+    admin = tok(world, "admin")
+    tokens = login(client, "TM", from_ip=ip(50)).json()
+    assert client.patch(f"/staff/{world['TM'].id}", headers=admin, json={"roles": ["teacher", "methodist", "admin"]}).status_code == 200
+    try:
+        assert client.post("/auth/refresh", json={"refresh_token": tokens["refresh_token"]}).status_code == 200
+    finally:
+        assert client.patch(f"/staff/{world['TM'].id}", headers=admin, json={"roles": ["teacher", "methodist"]}).status_code == 200
+    tokens = login(client, "TM", from_ip=ip(51)).json()
+    assert client.patch(f"/staff/{world['TM'].id}", headers=admin, json={"roles": ["teacher"]}).status_code == 200
+    try:
+        assert client.post("/auth/refresh", json={"refresh_token": tokens["refresh_token"]}).status_code == 401
+        assert client.get("/lms/courses", headers=bearer(tokens["access_token"])).status_code == 200  # teacher still
+    finally:
+        assert client.patch(f"/staff/{world['TM'].id}", headers=admin, json={"roles": ["teacher", "methodist"]}).status_code == 200

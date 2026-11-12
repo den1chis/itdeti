@@ -218,7 +218,9 @@ async def update_staff(
         user.role = primary_role(new_roles)
     if "is_active" in changes:
         user.is_active = changes["is_active"]
-    if deactivating:
+    # Night 5 (review B): a role taken away also ends every session (CRM, platform, Android) at once; access
+    # tokens lose the rights anyway (roles are read on each request), refresh tokens are deleted here.
+    if deactivating or (old_roles - new_roles):
         await _drop_sessions(db, user.id)
     await db.commit()
     await db.refresh(user)
@@ -281,7 +283,8 @@ async def assign_staff_students(
     await _staff_or_404(db, user_id)
     teacher = await active_teacher_or_400(db, user_id)
     ids = list(dict.fromkeys(payload.student_ids))
-    students = (await db.execute(select(Student).where(Student.id.in_(ids)).with_for_update())).scalars().all()
+    # Rows are locked in a fixed order: two parallel bulk assignments cannot deadlock.
+    students = (await db.execute(select(Student).where(Student.id.in_(ids)).order_by(Student.id).with_for_update())).scalars().all()
     if len(students) != len(ids):
         raise HTTPException(404, "Student not found")
     others = [s for s in students if s.teacher_id is not None and s.teacher_id != teacher.id]
@@ -330,6 +333,9 @@ async def set_student_teacher(
     student = await db.scalar(select(Student).where(Student.id == student_id).with_for_update())
     if not student:
         raise HTTPException(404, "Student not found")
+    if payload.teacher_id is not None:
+        # Lock the teacher row like PATCH /staff does: a parallel deactivation cannot miss this student.
+        await db.execute(select(User.id).where(User.id == payload.teacher_id).with_for_update())
     teacher = await active_teacher_or_400(db, payload.teacher_id)
     before_id = student.teacher_id
     before_name = await db.scalar(select(User.full_name).where(User.id == before_id)) if before_id else None
