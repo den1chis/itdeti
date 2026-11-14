@@ -62,6 +62,35 @@ class TeacherLesson(BaseModel):
     lesson_type: str
 
 
+# ---------------------------------------------------------------- /teacher/learning/* (learning platform, night 5)
+# Only names, courses and lesson progress: no contacts, no money, no private fields.
+class LearningLesson(BaseModel):
+    id: uuid.UUID
+    title: str
+    status: str  # not_started | in_progress | done
+
+
+class LearningModule(BaseModel):
+    id: uuid.UUID
+    title: str
+    lessons: List[LearningLesson] = Field(default_factory=list)
+
+
+class LearningCourse(BaseModel):
+    course_id: uuid.UUID
+    title: str
+    enrollment_status: str
+    lessons_total: int
+    lessons_done: int
+    modules: Optional[List[LearningModule]] = None  # only in the detail answer
+
+
+class LearningStudent(BaseModel):
+    id: uuid.UUID
+    full_name: str
+    courses: List[LearningCourse] = Field(default_factory=list)
+
+
 # ---------------------------------------------------------------- /staff
 def _clean_roles(roles: List[str]) -> List[str]:
     order = ["admin", "teacher", "methodist"]
@@ -125,6 +154,29 @@ class StaffBlocker(BaseModel):
 
 class TeacherAssign(BaseModel):
     teacher_id: Optional[uuid.UUID] = None
+
+
+class StaffStudentsAssign(BaseModel):
+    """Bulk assignment of students to ONE teacher (adds to his students; nobody is unassigned here)."""
+    student_ids: List[uuid.UUID] = Field(min_length=1, max_length=200)
+    # A student who already has ANOTHER teacher is moved only when the admin confirmed it in the CRM.
+    confirm_reassign: bool = False
+
+
+class StaffStudentBrief(BaseModel):
+    id: uuid.UUID
+    full_name: str
+    course: Optional[str] = None
+    is_active: bool
+    teacher_id: Optional[uuid.UUID] = None
+    teacher_name: Optional[str] = None
+
+
+class StaffStudentsAssigned(BaseModel):
+    teacher_id: uuid.UUID
+    assigned: int
+    reassigned: List[StaffStudentBrief] = Field(default_factory=list)
+    students: List[StaffStudentBrief] = Field(default_factory=list)  # all students of the teacher after the change
 
 
 class StudentTeacherResponse(BaseModel):

@@ -69,6 +69,7 @@ class StudentResponse(BaseModel):
     current_month_lessons: int = 0
     current_month_due: Decimal = Decimal("0.00")
     parents: List[ParentResponse] = Field(default_factory=list)
+    teacher_id: Optional[uuid.UUID] = None  # night 5: permanent teacher (admin CRM: selector in the student card)
 
 
 class BalanceResponse(BaseModel):

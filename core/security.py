@@ -25,12 +25,19 @@ def create_access_token(user_id: str, role: str) -> str:
     )
 
 
-def create_refresh_token(user_id: str) -> str:
+def create_refresh_token(user_id: str, cap: Optional[int] = None) -> str:
+    """cap (unix time, night 5): hard end of a session opened by a one-time code from the CRM. Rotation in
+    /auth/refresh carries it over, so such a session never outlives it."""
     expire = datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+    claims = {"sub": user_id, "type": "refresh", "jti": secrets.token_hex(8)}
+    if cap is not None:
+        expire = min(expire, datetime.fromtimestamp(int(cap), timezone.utc))
+        claims["cap"] = int(cap)
+    claims["exp"] = expire
     # "jti": two tokens issued for one user within the same second must still differ (the stored hash is
     # unique; without it two simultaneous logins of one account collided).
     return jwt.encode(
-        {"sub": user_id, "type": "refresh", "exp": expire, "jti": secrets.token_hex(8)},
+        claims,
         settings.JWT_SECRET_KEY,
         algorithm=settings.JWT_ALGORITHM,
     )

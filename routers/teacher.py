@@ -20,6 +20,8 @@ from models.schedule import Event, StudentScheduleSlot
 from models.student import Student
 from models.student_account import StudentAccount
 from models.user import User
+from models.lms import LmsCourse, LmsEnrollment, LmsLesson, LmsLessonProgress, LmsModule
+from schemas.staff import LearningCourse, LearningLesson, LearningModule, LearningStudent
 from schemas.staff import TeacherLesson, TeacherMe, TeacherParent, TeacherScheduleSlot, TeacherStudent, TeacherStudentDetail
 
 router = APIRouter(prefix="/teacher", tags=["teacher"], dependencies=[Depends(require_teacher)])
@@ -154,3 +156,85 @@ async def teacher_lessons(
             )
         )
     return out
+
+
+# ---------------------------------------------------------------- learning platform (night 5)
+async def _learning(db: AsyncSession, students: List[Student], with_tree: bool) -> List[LearningStudent]:
+    """Courses and lesson progress of the given (already ownership-filtered) students."""
+    ids = [s.id for s in students]
+    enrollments = defaultdict(list)
+    courses = {}
+    if ids:
+        rows = await db.execute(
+            select(LmsEnrollment, LmsCourse)
+            .join(LmsCourse, LmsCourse.id == LmsEnrollment.course_id)
+            .where(LmsEnrollment.student_id.in_(ids))
+            .order_by(LmsEnrollment.started_at)
+        )
+        for enrollment, course in rows.all():
+            enrollments[enrollment.student_id].append(enrollment)
+            courses[course.id] = course
+    trees = {}
+    for course_id in courses:
+        modules = (
+            await db.execute(select(LmsModule).where(LmsModule.course_id == course_id).order_by(LmsModule.sort_order, LmsModule.created_at))
+        ).scalars().all()
+        lessons = []
+        if modules:
+            lessons = (
+                await db.execute(
+                    select(LmsLesson).where(LmsLesson.module_id.in_([m.id for m in modules])).order_by(LmsLesson.sort_order, LmsLesson.created_at)
+                )
+            ).scalars().all()
+        trees[course_id] = [(m, [l for l in lessons if l.module_id == m.id]) for m in modules]
+    lesson_ids = [l.id for tree in trees.values() for _, ls in tree for l in ls]
+    statuses = {}
+    if ids and lesson_ids:
+        rows = await db.execute(
+            select(LmsLessonProgress.student_id, LmsLessonProgress.lesson_id, LmsLessonProgress.status).where(
+                LmsLessonProgress.student_id.in_(ids), LmsLessonProgress.lesson_id.in_(lesson_ids)
+            )
+        )
+        statuses = {(sid, lid): st for sid, lid, st in rows.all()}
+
+    out = []
+    for student in students:
+        items = []
+        for enrollment in enrollments[student.id]:
+            tree = trees[enrollment.course_id]
+            all_lessons = [l for _, ls in tree for l in ls]
+            done = sum(1 for l in all_lessons if statuses.get((student.id, l.id)) == "done")
+            items.append(LearningCourse(
+                course_id=enrollment.course_id,
+                title=courses[enrollment.course_id].title,
+                enrollment_status=enrollment.status,
+                lessons_total=len(all_lessons),
+                lessons_done=done,
+                modules=[
+                    LearningModule(id=m.id, title=m.title, lessons=[
+                        LearningLesson(id=l.id, title=l.title, status=statuses.get((student.id, l.id), "not_started")) for l in ls
+                    ])
+                    for m, ls in tree
+                ] if with_tree else None,
+            ))
+        out.append(LearningStudent(id=student.id, full_name=student.full_name, courses=items))
+    return out
+
+
+@router.get("/learning/students", response_model=List[LearningStudent])
+async def learning_students(db: AsyncSession = Depends(get_db), user: User = Depends(require_teacher)):
+    """"My students" on the learning platform: teacher -> own active students, admin -> all active students.
+    Name, course and the number of finished lessons only (no contacts, no money)."""
+    query = (
+        select(Student)
+        .where(Student.id.in_(owned_student_ids(user)), Student.is_active.is_(True))
+        .order_by(Student.full_name)
+    )
+    return await _learning(db, list((await db.execute(query)).scalars().all()), with_tree=False)
+
+
+@router.get("/learning/students/{student_id}", response_model=LearningStudent)
+async def learning_student(student_id: UUID, db: AsyncSession = Depends(get_db), user: User = Depends(require_teacher)):
+    """One own student (admin: any; foreign -> 404): which lessons of the course are finished."""
+    student = await student_or_404(db, user, student_id)
+    return (await _learning(db, [student], with_tree=True))[0]

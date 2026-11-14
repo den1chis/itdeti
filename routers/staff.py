@@ -1,6 +1,8 @@
 """Staff management and teacher assignment (admin only).
 
 - GET/POST /staff, PATCH /staff/{id}, POST /staff/{id}/reset-password
+- GET /staff/{id}/students      students of a staff member (night 5: staff card in the CRM)
+- PUT /staff/{id}/students      bulk assignment of students to a teacher (night 5)
 - PUT /students/{id}/teacher   permanent teacher of a student (or null)
 - PUT /lessons/{id}/teacher    substitute for ONE future lesson (or null)
 
@@ -39,6 +41,9 @@ from schemas.staff import (
     StaffCredentials,
     StaffPasswordReset,
     StaffResponse,
+    StaffStudentBrief,
+    StaffStudentsAssign,
+    StaffStudentsAssigned,
     StaffUpdate,
     StudentTeacherResponse,
     TeacherAssign,
@@ -213,7 +218,9 @@ async def update_staff(
         user.role = primary_role(new_roles)
     if "is_active" in changes:
         user.is_active = changes["is_active"]
-    if deactivating:
+    # Night 5 (review B): a role taken away also ends every session (CRM, platform, Android) at once; access
+    # tokens lose the rights anyway (roles are read on each request), refresh tokens are deleted here.
+    if deactivating or (old_roles - new_roles):
         await _drop_sessions(db, user.id)
     await db.commit()
     await db.refresh(user)
@@ -244,15 +251,100 @@ async def reset_staff_password(user_id: UUID, response: Response, payload: Staff
     return StaffCredentials(**(await _out(db, user)).model_dump(), password=password)
 
 
+# ---------------------------------------------------------------- students of a staff member (night 5)
+async def _students_of(db: AsyncSession, teacher_id: UUID) -> List[StaffStudentBrief]:
+    rows = await db.execute(
+        select(Student.id, Student.full_name, Student.course, Student.is_active)
+        .where(Student.teacher_id == teacher_id)
+        .order_by(Student.full_name)
+    )
+    return [StaffStudentBrief(id=i, full_name=n, course=c, is_active=bool(a), teacher_id=teacher_id) for i, n, c, a in rows.all()]
+
+
+@router.get("/staff/{user_id}/students", response_model=List[StaffStudentBrief])
+async def staff_students(user_id: UUID, db: AsyncSession = Depends(get_db)):
+    user = await db.scalar(select(User).where(User.id == user_id, _is_staff_sql()))
+    if not user:
+        raise HTTPException(404, "Сотрудник не найден")
+    return await _students_of(db, user.id)
+
+
+@router.put("/staff/{user_id}/students", response_model=StaffStudentsAssigned)
+async def assign_staff_students(
+    user_id: UUID,
+    payload: StaffStudentsAssign,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Assign several students to one teacher (active, with the teacher role). Students already with this teacher
+    are left as they are; a student with ANOTHER teacher -> 409 "needs_confirmation" with the list, unless
+    confirm_reassign=true. Nobody is unassigned here (the student card does that)."""
+    await _staff_or_404(db, user_id)
+    teacher = await active_teacher_or_400(db, user_id)
+    ids = list(dict.fromkeys(payload.student_ids))
+    # Rows are locked in a fixed order: two parallel bulk assignments cannot deadlock.
+    students = (await db.execute(select(Student).where(Student.id.in_(ids)).order_by(Student.id).with_for_update())).scalars().all()
+    if len(students) != len(ids):
+        raise HTTPException(404, "Student not found")
+    others = [s for s in students if s.teacher_id is not None and s.teacher_id != teacher.id]
+    names = {}
+    if others:
+        rows = await db.execute(select(User.id, User.full_name).where(User.id.in_({s.teacher_id for s in others})))
+        names = dict(rows.all())
+    reassigned = [
+        StaffStudentBrief(id=s.id, full_name=s.full_name, course=s.course, is_active=bool(s.is_active),
+                          teacher_id=s.teacher_id, teacher_name=names.get(s.teacher_id))
+        for s in sorted(others, key=lambda x: x.full_name)
+    ]
+    if reassigned and not payload.confirm_reassign:
+        raise HTTPException(409, {
+            "code": "needs_confirmation",
+            "message": "У части учеников уже есть другой преподаватель. Подтвердите переназначение.",
+            "students": [r.model_dump(mode="json") for r in reassigned],
+        })
+    changed = [s for s in students if s.teacher_id != teacher.id]
+    for student in changed:
+        student.teacher_id = teacher.id
+    await db.commit()
+    if changed:
+        await audit.record(
+            audit.TEACHER_ASSIGNED_BULK, actor=current_user, target_type="user", target_id=teacher.id, ip=client_ip(request),
+            details={
+                "name": teacher.full_name,
+                "count": len(changed),
+                "students": [s.full_name for s in sorted(changed, key=lambda x: x.full_name)],
+                "reassigned": [f"{r.full_name} (было: {r.teacher_name or '—'})" for r in reassigned],
+            },
+        )
+    return StaffStudentsAssigned(teacher_id=teacher.id, assigned=len(changed), reassigned=reassigned,
+                                 students=await _students_of(db, teacher.id))
+
+
 # ---------------------------------------------------------------- teacher assignment
 @router.put("/students/{student_id}/teacher", response_model=StudentTeacherResponse)
-async def set_student_teacher(student_id: UUID, payload: TeacherAssign, db: AsyncSession = Depends(get_db)):
+async def set_student_teacher(
+    student_id: UUID,
+    payload: TeacherAssign,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     student = await db.scalar(select(Student).where(Student.id == student_id).with_for_update())
     if not student:
         raise HTTPException(404, "Student not found")
+    if payload.teacher_id is not None:
+        # Lock the teacher row like PATCH /staff does: a parallel deactivation cannot miss this student.
+        await db.execute(select(User.id).where(User.id == payload.teacher_id).with_for_update())
     teacher = await active_teacher_or_400(db, payload.teacher_id)
+    before_id = student.teacher_id
+    before_name = await db.scalar(select(User.full_name).where(User.id == before_id)) if before_id else None
     student.teacher_id = teacher.id if teacher else None
     await db.commit()
+    if before_id != student.teacher_id:
+        await audit.record(audit.TEACHER_ASSIGNED, actor=current_user, target_type="student", target_id=student.id,
+                           ip=client_ip(request),
+                           details={"student": student.full_name, "before": before_name, "after": teacher.full_name if teacher else None})
     return StudentTeacherResponse(student_id=student.id, teacher_id=student.teacher_id, teacher_name=teacher.full_name if teacher else None)
 
 

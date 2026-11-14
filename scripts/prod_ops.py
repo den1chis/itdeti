@@ -60,13 +60,15 @@ COUNT_TABLES = [
     "users", "students", "parents", "student_parents", "lessons", "events", "payments", "expenses",
     "student_schedule", "refresh_tokens", "lms_courses", "lms_modules", "lms_lessons", "lms_enrollments",
     "lms_lesson_progress", "tasks", "student_accounts", "notifications", "incoming_notifications",
-    "audit_log", "auth_login_state", "auth_email_locks",
+    "audit_log", "auth_login_state", "auth_email_locks", "auth_handoff_codes",
 ]
 # The system keeps working while we deploy: these may grow between two `counts`.
 GROWTH_ALLOWED = {"events", "notifications", "incoming_notifications", "audit_log", "auth_login_state",
                   "auth_email_locks"}
+# Night 5: one-time codes live 60 s and are deleted when new ones are issued (grow and shrink by themselves).
+ANY_CHANGE_ALLOWED_NIGHT5 = {"auth_handoff_codes"}
 # refresh_tokens grows with every login and shrinks when the new server deletes expired rows.
-ANY_CHANGE_ALLOWED = {"refresh_tokens"}
+ANY_CHANGE_ALLOWED = {"refresh_tokens"} | ANY_CHANGE_ALLOWED_NIGHT5
 
 
 class Refused(Exception):

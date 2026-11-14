@@ -35,6 +35,7 @@ PUBLIC_ROUTES = {
     ("POST", "/auth/refresh"),
     ("POST", "/auth/logout"),
     ("POST", "/student/auth/login"),
+    ("POST", "/auth/handoff/redeem"),  # night 5: one-time code -> staff tokens (limited per IP)
     # FastAPI documentation
     ("GET", "/openapi.json"),
     ("GET", "/docs"),
