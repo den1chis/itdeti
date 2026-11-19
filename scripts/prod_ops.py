@@ -329,6 +329,36 @@ SELECT to_char((SELECT s FROM b), 'YYYY-MM') AS month,
 """
 
 
+# Both forecasts of GET /finance/forecast (night 6) in SQL, for the report (read-only). Slot weekday: 0 = Monday
+# (Python weekday(), as in routers/finance._occurrences) = isodow - 1.
+FORECAST_SQL = """
+WITH t AS (SELECT (now() AT TIME ZONE 'Asia/Almaty')::date AS today),
+nm AS (SELECT (date_trunc('month', (SELECT today FROM t)) + interval '1 month')::date AS s,
+              (date_trunc('month', (SELECT today FROM t)) + interval '2 month' - interval '1 day')::date AS e),
+days AS (SELECT d::date AS d FROM nm, generate_series(nm.s, nm.e, interval '1 day') AS d),
+lessons AS (
+  SELECT count(*) AS n, coalesce(sum(st.lesson_price), 0) AS income
+  FROM student_schedule sl JOIN students st ON st.id = sl.student_id JOIN days ON (extract(isodow FROM days.d)::int - 1) = sl.day_of_week
+  WHERE st.is_active AND sl.is_active AND days.d >= sl.valid_from AND (sl.valid_until IS NULL OR days.d <= sl.valid_until)),
+months AS (SELECT (date_trunc('month', (SELECT today FROM t)) - make_interval(months => k))::date AS s FROM generate_series(1, 3) AS k),
+per_month AS (
+  SELECT m.s,
+    (SELECT coalesce(sum(amount), 0) FROM payments WHERE NOT is_cancelled
+       AND recorded_at >= (m.s::timestamp AT TIME ZONE 'Asia/Almaty')
+       AND recorded_at < ((m.s + interval '1 month')::timestamp AT TIME ZONE 'Asia/Almaty')) AS students,
+    (SELECT coalesce(sum(amount), 0) FROM recurring_income_records WHERE NOT is_cancelled
+       AND received_date >= m.s AND received_date < m.s + interval '1 month') AS recurring
+  FROM months m)
+SELECT to_char((SELECT s FROM nm), 'YYYY-MM') AS month,
+  (SELECT n FROM lessons) AS schedule_lessons,
+  (SELECT income FROM lessons) AS schedule_students_income,
+  (SELECT coalesce(sum(amount), 0) FROM recurring_incomes WHERE is_active) AS schedule_recurring_income,
+  (SELECT string_agg(to_char(s, 'YYYY-MM') || ': ' || students || ' + ' || recurring, '; ' ORDER BY s) FROM per_month) AS average_months,
+  round((SELECT avg(students) FROM per_month), 2) AS average_students_income,
+  round((SELECT avg(recurring) FROM per_month), 2) AS average_recurring_income
+"""
+
+
 async def finance_sums(conn) -> dict:
     result = {}
     async with conn.transaction(isolation="repeatable_read", readonly=True):
@@ -343,6 +373,15 @@ async def finance_sums(conn) -> dict:
         result["current_month"] = {"month": month["month"], "income_from_students": str(income),
                                    "recurring_income_total": str(recurring), "total_income": str(income + recurring),
                                    "expenses_total": str(expenses), "net": str(income + recurring - expenses)}
+        f = await conn.fetchrow(FORECAST_SQL)
+        result["forecast_next_month"] = {
+            "month": f["month"],
+            "schedule_total": str(f["schedule_students_income"] + f["schedule_recurring_income"]),
+            "schedule_students_income": str(f["schedule_students_income"]), "schedule_lessons": f["schedule_lessons"],
+            "schedule_recurring_income": str(f["schedule_recurring_income"]),
+            "average_total": str(f["average_students_income"] + f["average_recurring_income"]),
+            "average_students_income": str(f["average_students_income"]),
+            "average_recurring_income": str(f["average_recurring_income"]), "average_months": f["average_months"] or ""}
     return result
 
 
