@@ -28,10 +28,11 @@ from core.database import AsyncSessionLocal  # noqa: E402
 from core.security import create_access_token, hash_password  # noqa: E402
 from core.student_auth import create_student_token  # noqa: E402
 from models.expense import Expense  # noqa: E402
+from models.lesson import Lesson  # noqa: E402
 from models.payment import Payment  # noqa: E402
 from models.recurring_income import RecurringIncome, RecurringIncomeRecord  # noqa: E402
 from models.savings import SavingsAccount, SavingsMovement  # noqa: E402
-from models.schedule import StudentScheduleSlot  # noqa: E402
+from models.schedule import Event, StudentScheduleSlot  # noqa: E402
 from models.security import AuditLog  # noqa: E402
 from models.student import Student  # noqa: E402
 from models.user import User  # noqa: E402
@@ -95,6 +96,10 @@ async def _cleanup(w):
         await db.execute(delete(SavingsMovement).where(SavingsMovement.account_id.in_(accounts)))
         await db.execute(delete(SavingsAccount).where(SavingsAccount.id.in_(accounts)))
         await db.execute(delete(Payment).where(Payment.student_id == w["S"].id))
+        # The background job of the app may have created lessons (and events) from the test slot: they go first.
+        event_ids = [e for e in (await db.execute(select(Lesson.event_id).where(Lesson.student_id == w["S"].id))).scalars().all() if e]
+        await db.execute(delete(Lesson).where(Lesson.student_id == w["S"].id))
+        await db.execute(delete(Event).where(Event.id.in_(event_ids)))
         await db.execute(delete(StudentScheduleSlot).where(StudentScheduleSlot.student_id == w["S"].id))
         await db.execute(delete(Student).where(Student.id == w["S"].id))
         incomes = (await db.execute(select(RecurringIncome.id).where(RecurringIncome.name.like(f"%{RUN}%")))).scalars().all()
