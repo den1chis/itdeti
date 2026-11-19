@@ -218,7 +218,8 @@ def test_period_summary_counts_payments_recurring_and_expenses_of_the_period(cli
     assert sorted(Decimal(o["amount"]) for o in mine) == [Decimal("3000"), Decimal("5000")]
     assert any(o["source_type"] == "recurring_income" and Decimal(o["amount"]) == Decimal("7000") for o in ops)
     assert any(o["source_type"] == "expense" and o["description"] == f"t6 {RUN}" for o in ops)
-    assert all(start.isoformat() <= o["date"][:10] <= end.isoformat() for o in ops)
+    # dates come as UTC instants (like /finance/transactions); the period is in local days (Asia/Almaty)
+    assert all(start <= datetime.fromisoformat(o["date"].replace("Z", "+00:00")).astimezone(LOCAL_TZ).date() <= end for o in ops)
     with_cancelled = client.get(f"/finance/period/operations?{period_q(start, end)}&include_cancelled=true", headers=admin).json()
     assert len(with_cancelled) == len(ops) + 2
 
@@ -233,6 +234,9 @@ def test_period_validation(client, world):
     assert client.get("/finance/period?from=2041-03-10", headers=admin).status_code == 400
     assert client.get("/finance/period?from=2000-01-01&to=2041-03-01", headers=admin).status_code == 400
     assert client.get("/finance/period?from=bad&to=2041-03-01", headers=admin).status_code == 422
+    # review: dates outside 2000..2100 -> 400 (no overflow on 9999-12-31)
+    assert client.get("/finance/period?from=9990-01-01&to=9999-12-31", headers=admin).status_code == 400
+    assert client.get("/finance/savings/monthly?from=0001-01-01&to=0001-02-01", headers=admin).status_code == 400
 
 
 def test_old_finance_answers_keep_their_shape(client, world):

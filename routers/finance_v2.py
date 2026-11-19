@@ -30,6 +30,8 @@ from models.user import User
 from routers.finance import LOCAL_TZ, _local_start, _schedule_counts, _sum_expenses, _sum_payments, _sum_recurring_income
 from schemas.finance import TransactionItem
 from schemas.finance_v2 import (
+    MAX_DATE,
+    MIN_DATE,
     AverageForecast,
     AverageMonth,
     Forecast,
@@ -74,6 +76,8 @@ def period(date_from: Optional[date] = Query(None, alias="from"), date_to: Optio
         return _month_bounds(_today())
     if date_from is None or date_to is None:
         raise HTTPException(400, "укажите обе даты периода: from и to")
+    if not (MIN_DATE <= date_from <= MAX_DATE and MIN_DATE <= date_to <= MAX_DATE):
+        raise HTTPException(400, "даты периода — с 2000 по 2100 год")
     if date_to < date_from:
         raise HTTPException(400, "конец периода раньше начала")
     if (date_to - date_from).days > MAX_PERIOD_DAYS:
