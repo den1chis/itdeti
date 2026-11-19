@@ -237,6 +237,7 @@ def _server_smoke() -> list:
             state(student_limit_failed=codes)
 
         night5_smoke(client, check, run_id)
+        night6_smoke(client, check)
     return failures
 
 
@@ -316,6 +317,47 @@ def night5_smoke(client, check, run_id) -> None:
     client.post(f"{API}/auth/logout", json={"refresh_token": tokens["refresh_token"]})
 
 
+NIGHT6_ROUTES = [
+    ("GET", "/finance/period"), ("GET", "/finance/period/operations"), ("GET", "/finance/forecast"),
+    ("GET", "/finance/savings"), ("POST", "/finance/savings/accounts"),
+    ("PATCH", "/finance/savings/accounts/00000000-0000-0000-0000-000000000000"),
+    ("DELETE", "/finance/savings/accounts/00000000-0000-0000-0000-000000000000"),
+    ("GET", "/finance/savings/movements"), ("POST", "/finance/savings/movements"),
+    ("PATCH", "/finance/savings/movements/00000000-0000-0000-0000-000000000000"),
+    ("DELETE", "/finance/savings/movements/00000000-0000-0000-0000-000000000000"),
+    ("GET", "/finance/savings/monthly"),
+]
+
+
+def night6_smoke(client, check) -> None:
+    """Night 6: every new finance route is closed without a token and with a broken token (no login needed).
+    With a TEST teacher from prod.env: 403 on the new routes. The old /finance/summary stays closed too."""
+    say("  --- ночь 6 ---")
+    for method, path in NIGHT6_ROUTES + [("GET", "/finance/summary"), ("GET", "/finance/transactions")]:
+        code = client.request(method, API + path, json={}).status_code
+        check(f"{method} {path} без токена -> 401/403", code in (401, 403), code)
+        code = client.request(method, API + path, json={}, headers={"Authorization": "Bearer not-a-token"}).status_code
+        check(f"{method} {path} с неверным токеном -> 401", code == 401, code)
+    teacher_email, teacher_password = smoke_secret("SMOKE_TEACHER_EMAIL"), smoke_secret("SMOKE_TEACHER_PASSWORD")
+    if not (teacher_email and teacher_password):
+        say("  ПРОПУЩЕНО: 403 преподавателю на новых маршрутах финансов — нет SMOKE_TEACHER_EMAIL/PASSWORD в prod.env "
+            "(покрыто тестами test_night6.py и матрицей доступа; проверить по чек-листу)")
+        state(teacher_smoke_night6_skipped=True)
+        return
+    say("  жду 65 с: лимит входа с этого IP")
+    time.sleep(65)
+    r = client.post(f"{API}/auth/login", json={"email": teacher_email, "password": teacher_password}, headers={"Origin": ORIGIN_OK})
+    check("ночь 6: вход тестового преподавателя -> 200", r.status_code == 200, r.status_code)
+    if r.status_code != 200:
+        return
+    tokens = r.json()
+    auth = {"Authorization": f"Bearer {tokens['access_token']}"}
+    for method, path in NIGHT6_ROUTES:
+        code = client.request(method, API + path, json={}, headers=auth).status_code
+        check(f"преподаватель: {method} {path} -> 403", code == 403, code)
+    client.post(f"{API}/auth/logout", json={"refresh_token": tokens["refresh_token"]})
+
+
 def wait_for_pages(url: str, marker: str, minutes: int = 10) -> str:
     deadline = time.time() + minutes * 60
     with http() as client:
@@ -352,6 +394,7 @@ def page_version(repo: str, page: str) -> str:
 def step1():
     prod_ops("preflight")
     prod_ops("counts", "--save", str(COUNTS_FILE))
+    prod_ops("finance", "--save", str(FINANCE_FILE))
 
 
 def step2():
@@ -362,6 +405,7 @@ def step3():
     prod_ops("migrate", MIGRATION)
     prod_ops("postcheck", MIGRATION_NUMBER)
     prod_ops("counts", "--compare", str(COUNTS_FILE))
+    prod_ops("finance", "--compare", str(FINANCE_FILE))
 
 
 def step4():
@@ -408,6 +452,10 @@ def step6():
     html = wait_for_pages(f"{CRM}/app.html", f"?v={version}")
     if "staff-admin.js" not in html or "handoff.js" not in html:
         raise Stop("app.html на Pages без staff-admin.js / handoff.js")
+    if state().get("server_merges") and "finance-v2.js" in html:  # full night 6 deploy: the new page must be there
+        script = wait_for_pages(f"{CRM}/finance-v2.js?v={version}", "/finance/savings")
+        if "/finance/period" not in script:
+            raise Stop("finance-v2.js на Pages без новой страницы «Финансы»")
     check_assets(CRM, html)
     check_assets(CRM, wait_for_pages(f"{CRM}/index.html", f"?v={version}"))
     check_assets(CRM, wait_for_pages(f"{CRM}/staff.html", f"?v={version}"))
@@ -425,6 +473,9 @@ def step7():
 
 def step8():
     prod_ops("counts", "--compare", str(COUNTS_FILE))
+    # The old finance tables: nothing of them may have changed by the deploy (if the owner recorded a payment
+    # meanwhile, this shows it as a difference: check by hand, nothing is rolled back for that).
+    prod_ops("finance", "--compare", str(FINANCE_FILE))
 
 
 STEPS = [
