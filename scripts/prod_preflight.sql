@@ -73,9 +73,8 @@ FROM students;
 -- @expect scalar >= 130000
 SELECT current_setting('server_version_num')::int AS server_version_num;
 
--- [10] Миграция 016 ещё не применена (таблиц накоплений нет). Если 016 уже применена — preflight не норма:
---      продолжать выкладку с шага 3 (`--from-step 3`; миграция идемпотентна, бэкап нужен свежий).
--- @expect scalar == 0
+-- [10] Есть ли уже таблицы 016 (до миграции — 0; 2 не мешает: миграция идемпотентна, как в ночах 4–5).
+-- @expect info
 SELECT count(*) AS savings_tables_present
 FROM information_schema.tables
 WHERE table_schema = 'public' AND table_name IN ('savings_accounts', 'savings_movements');

@@ -226,7 +226,11 @@ def test_period_summary_counts_payments_recurring_and_expenses_of_the_period(cli
     # dates come as UTC instants (like /finance/transactions); the period is in local days (Asia/Almaty)
     assert all(start <= datetime.fromisoformat(o["date"].replace("Z", "+00:00")).astimezone(LOCAL_TZ).date() <= end for o in ops)
     with_cancelled = client.get(f"/finance/period/operations?{period_q(start, end)}&include_cancelled=true", headers=admin).json()
-    assert len(with_cancelled) == len(ops) + 2
+    # only this run's rows: other runs may have left rows in 2041-03
+    def own(items):
+        return [o for o in items if o.get("student_id") == str(world["S"].id) or o.get("description") == f"t6 {RUN}"]
+    assert len(own(with_cancelled)) == len(own(ops)) + 2
+    assert sorted(Decimal(o["amount"]) for o in own(with_cancelled) if o["is_cancelled"]) == [Decimal("100"), Decimal("700")]
 
     # a one-day period inside
     day = client.get(f"/finance/period?{period_q(date(2041, 3, 31), date(2041, 3, 31))}", headers=admin).json()
