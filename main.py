@@ -135,6 +135,16 @@ try:
 except Exception:  # pragma: no cover
     logging.getLogger("itdeti").exception("Audit module failed to load; the rest of the API is unaffected")
 
+# Night 6 (migration 016): Финансы by period, income forecast, savings. Isolated the same way: the old
+# /finance routes live in routers/finance.py and do not depend on this module.
+try:
+    import models.savings  # noqa: F401
+    from routers import finance_v2
+
+    app.include_router(finance_v2.router)
+except Exception:  # pragma: no cover
+    logging.getLogger("itdeti").exception("Finance v2 module failed to load; the rest of the API is unaffected")
+
 
 @app.get("/health")
 async def health():

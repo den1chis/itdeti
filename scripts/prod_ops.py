@@ -24,6 +24,10 @@ Commands:
                       Every check prints its result and "норма" / "НЕ НОРМА"; exit code 1 if any is not ok.
   counts              row counts of the main tables; --save FILE writes them, --compare FILE compares with a
                       saved file (exit code 1 on a difference that is not allowed growth).
+  finance             night 6: control sums of the OLD finance tables (rows, cancelled rows, sum of amounts, and
+                      an md5 of every row's id/amount/date/cancel flag, i.e. any change of an existing row is seen)
+                      plus the current month totals by the formulas of GET /finance/summary.
+                      --save FILE / --compare FILE (exit code 1 on any difference; nothing may change there).
   migrate <file>      a file from supabase/migrations/ with a number > 013. Only after a successful backup of
                       the SAME database made within the last 30 minutes; refused when the text contains anything
                       but additions (rule 3 of TZ_NIGHT4).
@@ -61,6 +65,7 @@ COUNT_TABLES = [
     "student_schedule", "refresh_tokens", "lms_courses", "lms_modules", "lms_lessons", "lms_enrollments",
     "lms_lesson_progress", "tasks", "student_accounts", "notifications", "incoming_notifications",
     "audit_log", "auth_login_state", "auth_email_locks", "auth_handoff_codes",
+    "recurring_incomes", "recurring_expenses", "recurring_income_records", "savings_accounts", "savings_movements",
 ]
 # The system keeps working while we deploy: these may grow between two `counts`.
 GROWTH_ALLOWED = {"events", "notifications", "incoming_notifications", "audit_log", "auth_login_state",
@@ -302,6 +307,92 @@ def compare_counts(before: dict, after: dict) -> list:
     return problems
 
 
+# ---------------------------------------------------------------- finance control sums (night 6)
+# table -> (amount column, date expression, cancel flag expression)
+FINANCE_TABLES = {
+    "payments": ("amount", "recorded_at::text", "is_cancelled"),
+    "expenses": ("amount", "expense_date::text", "is_cancelled"),
+    "recurring_income_records": ("amount", "received_date::text", "is_cancelled"),
+    "recurring_incomes": ("amount", "day_of_month::text", "is_active"),
+    "recurring_expenses": ("amount", "day_of_month::text", "is_active"),
+}
+MONTH_SQL = """
+WITH b AS (SELECT date_trunc('month', (now() AT TIME ZONE 'Asia/Almaty'))::date AS s)
+SELECT to_char((SELECT s FROM b), 'YYYY-MM') AS month,
+  (SELECT coalesce(sum(amount), 0) FROM payments WHERE NOT is_cancelled
+      AND recorded_at >= ((SELECT s FROM b)::timestamp AT TIME ZONE 'Asia/Almaty')
+      AND recorded_at < (((SELECT s FROM b) + interval '1 month')::timestamp AT TIME ZONE 'Asia/Almaty')) AS income_from_students,
+  (SELECT coalesce(sum(amount), 0) FROM recurring_income_records WHERE NOT is_cancelled
+      AND received_date >= (SELECT s FROM b) AND received_date < (SELECT s FROM b) + interval '1 month') AS recurring_income_total,
+  (SELECT coalesce(sum(amount), 0) FROM expenses WHERE NOT is_cancelled
+      AND expense_date >= (SELECT s FROM b) AND expense_date < (SELECT s FROM b) + interval '1 month') AS expenses_total
+"""
+
+
+# Both forecasts of GET /finance/forecast (night 6) in SQL, for the report (read-only). Slot weekday: 0 = Monday
+# (Python weekday(), as in routers/finance._occurrences) = isodow - 1.
+FORECAST_SQL = """
+WITH t AS (SELECT (now() AT TIME ZONE 'Asia/Almaty')::date AS today),
+nm AS (SELECT (date_trunc('month', (SELECT today FROM t)) + interval '1 month')::date AS s,
+              (date_trunc('month', (SELECT today FROM t)) + interval '2 month' - interval '1 day')::date AS e),
+days AS (SELECT d::date AS d FROM nm, generate_series(nm.s, nm.e, interval '1 day') AS d),
+lessons AS (
+  SELECT count(*) AS n, coalesce(sum(st.lesson_price), 0) AS income
+  FROM student_schedule sl JOIN students st ON st.id = sl.student_id JOIN days ON (extract(isodow FROM days.d)::int - 1) = sl.day_of_week
+  WHERE st.is_active AND sl.is_active AND days.d >= sl.valid_from AND (sl.valid_until IS NULL OR days.d <= sl.valid_until)),
+months AS (SELECT (date_trunc('month', (SELECT today FROM t)) - make_interval(months => k))::date AS s FROM generate_series(1, 3) AS k),
+per_month AS (
+  SELECT m.s,
+    (SELECT coalesce(sum(amount), 0) FROM payments WHERE NOT is_cancelled
+       AND recorded_at >= (m.s::timestamp AT TIME ZONE 'Asia/Almaty')
+       AND recorded_at < ((m.s + interval '1 month')::timestamp AT TIME ZONE 'Asia/Almaty')) AS students,
+    (SELECT coalesce(sum(amount), 0) FROM recurring_income_records WHERE NOT is_cancelled
+       AND received_date >= m.s AND received_date < m.s + interval '1 month') AS recurring
+  FROM months m)
+SELECT to_char((SELECT s FROM nm), 'YYYY-MM') AS month,
+  (SELECT n FROM lessons) AS schedule_lessons,
+  (SELECT income FROM lessons) AS schedule_students_income,
+  (SELECT coalesce(sum(amount), 0) FROM recurring_incomes WHERE is_active) AS schedule_recurring_income,
+  (SELECT string_agg(to_char(s, 'YYYY-MM') || ': ' || students || ' + ' || recurring, '; ' ORDER BY s) FROM per_month) AS average_months,
+  round((SELECT avg(students) FROM per_month), 2) AS average_students_income,
+  round((SELECT avg(recurring) FROM per_month), 2) AS average_recurring_income
+"""
+
+
+async def finance_sums(conn) -> dict:
+    result = {}
+    async with conn.transaction(isolation="repeatable_read", readonly=True):
+        for table, (amount, day, flag) in FINANCE_TABLES.items():
+            row = await conn.fetchrow(
+                f"SELECT count(*) AS rows, count(*) FILTER (WHERE {flag}) AS flagged, coalesce(sum({amount}), 0) AS amount_sum, "
+                f"coalesce(md5(string_agg(id::text || '|' || {amount}::text || '|' || coalesce({day}, '') || '|' || {flag}::text, "
+                f"',' ORDER BY id)), '') AS digest FROM public.\"{table}\"")
+            result[table] = {"rows": row["rows"], "flagged": row["flagged"], "amount_sum": str(row["amount_sum"]), "digest": row["digest"]}
+        month = await conn.fetchrow(MONTH_SQL)
+        income, recurring, expenses = month["income_from_students"], month["recurring_income_total"], month["expenses_total"]
+        result["current_month"] = {"month": month["month"], "income_from_students": str(income),
+                                   "recurring_income_total": str(recurring), "total_income": str(income + recurring),
+                                   "expenses_total": str(expenses), "net": str(income + recurring - expenses)}
+        f = await conn.fetchrow(FORECAST_SQL)
+        result["forecast_next_month"] = {
+            "month": f["month"],
+            "schedule_total": str(f["schedule_students_income"] + f["schedule_recurring_income"]),
+            "schedule_students_income": str(f["schedule_students_income"]), "schedule_lessons": f["schedule_lessons"],
+            "schedule_recurring_income": str(f["schedule_recurring_income"]),
+            "average_total": str(f["average_students_income"] + f["average_recurring_income"]),
+            "average_students_income": str(f["average_students_income"]),
+            "average_recurring_income": str(f["average_recurring_income"]), "average_months": f["average_months"] or ""}
+    return result
+
+
+def compare_finance(before: dict, after: dict) -> list:
+    problems = []
+    for table in FINANCE_TABLES:
+        if before.get(table) != after.get(table):
+            problems.append(f"{table}: было {before.get(table)}, стало {after.get(table)}")
+    return problems
+
+
 # ---------------------------------------------------------------- backup
 def _json_default(value):
     if isinstance(value, (datetime, date)):
@@ -451,6 +542,9 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("preflight")
     post = sub.add_parser("postcheck")
     post.add_argument("number")
+    fin = sub.add_parser("finance")
+    fin.add_argument("--save", type=Path)
+    fin.add_argument("--compare", type=Path)
     counts = sub.add_parser("counts")
     counts.add_argument("--save", type=Path)
     counts.add_argument("--compare", type=Path)
@@ -495,6 +589,21 @@ async def run(args) -> int:
                 print(f"сохранено: {args.save}")
             if args.compare:
                 problems = compare_counts(json.loads(args.compare.read_text(encoding="utf-8")), counts)
+                for problem in problems:
+                    print("  РАСХОЖДЕНИЕ " + problem)
+                print("сравнение с " + args.compare.name + ": " + ("норма" if not problems else "НЕ НОРМА"))
+                return 0 if not problems else 1
+            return 0
+        if args.command == "finance":
+            sums = await finance_sums(conn)
+            for table, info in sums.items():
+                print(f"  {table}: " + ", ".join(f"{k}={v}" for k, v in info.items()))
+            if args.save:
+                args.save.parent.mkdir(parents=True, exist_ok=True)
+                args.save.write_text(json.dumps(sums, indent=1), encoding="utf-8")
+                print(f"сохранено: {args.save}")
+            if args.compare:
+                problems = compare_finance(json.loads(args.compare.read_text(encoding="utf-8")), sums)
                 for problem in problems:
                     print("  РАСХОЖДЕНИЕ " + problem)
                 print("сравнение с " + args.compare.name + ": " + ("норма" if not problems else "НЕ НОРМА"))

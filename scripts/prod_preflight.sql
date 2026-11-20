@@ -1,10 +1,10 @@
--- prod_preflight.sql — проверка прод-базы ПЕРЕД выкладкой ночи 5 (миграции до 014 применены, 015 — следующая).
+-- prod_preflight.sql — проверка прод-базы ПЕРЕД выкладкой ночи 6 (миграции до 015 применены, 016 — следующая).
 -- ТОЛЬКО ЧТЕНИЕ: в файле одни SELECT. Запуск: python scripts/prod_ops.py --prod preflight
 -- (можно и руками в Supabase → SQL Editor, по одному запросу).
 -- Формат для prod_ops.py: блок «-- [N] название», строка «-- @expect ПРАВИЛО», один SELECT.
 -- Правила: info (только показать) | all_true | rows == N | rows >= N | scalar == V | scalar >= N.
 -- В запросах нет персональных данных: только числа, имена таблиц и признаки.
--- (Версия ночи 4 — проверка перед 014 — в истории git: коммит 82e7301.)
+-- (Версия ночи 4 — проверка перед 014 — в истории git: коммит 82e7301; ночи 5 — перед 015: коммит 2aecd70.)
 
 -- [1] Таблиц в схеме public (0 или единицы — открыт не тот проект).
 -- @expect scalar >= 25
@@ -20,7 +20,7 @@ JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE n.nspname = 'public' AND c.relkind = 'r' AND NOT c.relrowsecurity
 ORDER BY c.relname;
 
--- [3] Миграции 012–014 применены (новый код читает эти таблицы и колонки).
+-- [3] Миграции 012–015 применены (новый код читает эти таблицы и колонки).
 -- @expect all_true
 SELECT
     EXISTS (SELECT 1 FROM information_schema.columns
@@ -36,7 +36,9 @@ SELECT
     EXISTS (SELECT 1 FROM information_schema.tables
             WHERE table_schema = 'public' AND table_name = 'auth_login_state')                                 AS auth_login_state,
     EXISTS (SELECT 1 FROM information_schema.columns
-            WHERE table_schema = 'public' AND table_name = 'refresh_tokens' AND column_name = 'token_hash')    AS refresh_tokens_token_hash;
+            WHERE table_schema = 'public' AND table_name = 'refresh_tokens' AND column_name = 'token_hash')    AS refresh_tokens_token_hash,
+    EXISTS (SELECT 1 FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = 'auth_handoff_codes')                               AS auth_handoff_codes_015;
 
 -- [4] public.users.id — uuid (на него ссылается новая таблица 015).
 -- @expect scalar == 1
@@ -71,7 +73,16 @@ FROM students;
 -- @expect scalar >= 130000
 SELECT current_setting('server_version_num')::int AS server_version_num;
 
--- [10] Что из 015 уже есть (до миграции — false; true не мешает: миграция идемпотентна).
+-- [10] Есть ли уже таблицы 016 (до миграции — 0; 2 не мешает: миграция идемпотентна, как в ночах 4–5).
 -- @expect info
-SELECT EXISTS (SELECT 1 FROM information_schema.tables
-               WHERE table_schema = 'public' AND table_name = 'auth_handoff_codes') AS auth_handoff_codes;
+SELECT count(*) AS savings_tables_present
+FROM information_schema.tables
+WHERE table_schema = 'public' AND table_name IN ('savings_accounts', 'savings_movements');
+
+-- [11] Старые финансовые таблицы на месте и с RLS (их counts и контрольные суммы — `prod_ops finance`).
+-- @expect scalar == 5
+SELECT count(*) AS finance_tables_with_rls
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = 'public' AND c.relkind = 'r' AND c.relrowsecurity
+  AND c.relname IN ('payments', 'expenses', 'recurring_incomes', 'recurring_expenses', 'recurring_income_records');

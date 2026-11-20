@@ -4,7 +4,7 @@ APP_VERSION is a constant changed by hand with every release (night). "commit" c
 variable Render sets for Git-backed services (RENDER_GIT_COMMIT); empty when it is not there (local work)."""
 import os
 
-APP_VERSION = "2026-11-13-night5"
+APP_VERSION = "2026-11-19-night6"
 
 
 def git_commit() -> str:

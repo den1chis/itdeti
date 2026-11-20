@@ -1,6 +1,6 @@
 # Маршруты API и классы доступа
 
-Состояние после ночи 5 (ветка `lms-mvp`). Ночь 5: добавлены `POST /auth/handoff` (сотрудник), `POST /auth/handoff/redeem` (public, одноразовый код), `GET /teacher/learning/students[/{student_id}]` (admin, teacher — свои), `GET`/`PUT /staff/{user_id}/students` (admin); `/auth/me` дополнительно отдаёт `roles`, `GET /students*` (admin) — `teacher_id`. Ночь 4: добавлен `GET /audit` (журнал действий, только admin); `POST /auth/login` остаётся `public`, но ограничен по частоте и блокируется после неверных паролей (`core/login_guard.py`: 429 с `Retry-After`). В ночь 3 маршруты не добавлялись, изменилась только документация FastAPI: `/docs`, `/redoc`, `/openapi.json` есть только при `ENABLE_DOCS=true`, иначе 404. Таблица сгенерирована: `python scripts/routes_inventory.py --before <снимок до ночи 2>`; колонка «Before night 2» — защита на начало ночи 2, «Access» — класс доступа сейчас.
+Состояние после ночи 6 (ветка `lms-mvp`). Ночь 6: добавлены маршруты новой страницы «Финансы» (`routers/finance_v2.py`, только admin, преподаватель и методист → 403): сводка за период `GET /finance/period`, история за период `GET /finance/period/operations`, прогноз `GET /finance/forecast`, накопления `/finance/savings*`; старые `/finance/*` и их ответы не менялись. Ночь 5: добавлены `POST /auth/handoff` (сотрудник), `POST /auth/handoff/redeem` (public, одноразовый код), `GET /teacher/learning/students[/{student_id}]` (admin, teacher — свои), `GET`/`PUT /staff/{user_id}/students` (admin); `/auth/me` дополнительно отдаёт `roles`, `GET /students*` (admin) — `teacher_id`. Ночь 4: добавлен `GET /audit` (журнал действий, только admin); `POST /auth/login` остаётся `public`, но ограничен по частоте и блокируется после неверных паролей (`core/login_guard.py`: 429 с `Retry-After`). В ночь 3 маршруты не добавлялись, изменилась только документация FastAPI: `/docs`, `/redoc`, `/openapi.json` есть только при `ENABLE_DOCS=true`, иначе 404. Таблица сгенерирована: `python scripts/routes_inventory.py --before <снимок до ночи 2>`; колонка «Before night 2» — защита на начало ночи 2, «Access» — класс доступа сейчас.
 
 ## Классы доступа (`core/access.py`)
 
@@ -22,7 +22,7 @@
 
 ## Все маршруты
 
-Всего: 145 строк (метод + путь), из них новых: 19 (в ночь 4 добавлен `GET /audit`, в ночь 5 — шесть маршрутов, отмечены «night 5»).
+Всего: 157 строк (метод + путь), из них новых: 31 (в ночь 4 добавлен `GET /audit`, в ночь 5 — шесть маршрутов, отмечены «night 5», в ночь 6 — двенадцать маршрутов финансов, отмечены «night 6»).
 
 | Router | Method | Path | Before night 2 | Access |
 |---|---|---|---|---|
@@ -66,6 +66,18 @@
 | finance | POST | `/finance/recurring-incomes/{recurring_id}/record` | role in admin/teacher | admin |
 | finance | GET | `/finance/summary` | any CRM user | admin |
 | finance | GET | `/finance/transactions` | any CRM user | admin |
+| finance_v2 | GET | `/finance/forecast` | — (new, night 6) | admin |
+| finance_v2 | GET | `/finance/period` | — (new, night 6) | admin |
+| finance_v2 | GET | `/finance/period/operations` | — (new, night 6) | admin |
+| finance_v2 | GET | `/finance/savings` | — (new, night 6) | admin |
+| finance_v2 | POST | `/finance/savings/accounts` | — (new, night 6) | admin |
+| finance_v2 | DELETE | `/finance/savings/accounts/{account_id}` | — (new, night 6) | admin |
+| finance_v2 | PATCH | `/finance/savings/accounts/{account_id}` | — (new, night 6) | admin |
+| finance_v2 | GET | `/finance/savings/monthly` | — (new, night 6) | admin |
+| finance_v2 | GET | `/finance/savings/movements` | — (new, night 6) | admin |
+| finance_v2 | POST | `/finance/savings/movements` | — (new, night 6) | admin |
+| finance_v2 | DELETE | `/finance/savings/movements/{movement_id}` | — (new, night 6) | admin |
+| finance_v2 | PATCH | `/finance/savings/movements/{movement_id}` | — (new, night 6) | admin |
 | lessons | GET | `/lessons` | any CRM user | admin |
 | lessons | POST | `/lessons` | role in admin/teacher | admin |
 | lessons | DELETE | `/lessons/{lesson_id}` | role in admin/teacher | admin |
